@@ -1,0 +1,95 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+*.cover
+.coverage
+.coverage.*
+coverage.xml
+*.log
+
+# Azure Functions
+local.settings.json
+.python_packages/
+.func/
+*.azurefunctions/
+bin/
+obj/
+
+# Environment files
+.env
+.env.*
+*.env
+!.env.example
+!.env.template
+
+# MCP Cache
+.mcp_cache/
+mcp_cache/
+*.cache
+*.db
+
+# IDE
+
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build
+build/
+dist/
+*.egg-info/
+*.egg
+*.zip
+bot.zip
+function.zip
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+Thumbs.db
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Certificates
+*.pem
+*.key
+*.cer
+*.crt
+*.pfx
+
+# Backup files
+*.bak
+*.backup
+*~
+*.tmp
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Node (if using for Azure Functions Core Tools)
+node_modules/
+
+# Test outputs
+htmlcov/
+.tox/
+.nox/
+test-results/

@@ -1,0 +1,2 @@
+# startup.txt - This tells Azure to run the main app
+gunicorn --bind 0.0.0.0:8000 --worker-class aiohttp.GunicornWebWorker --timeout 600 --workers 1 app:APP
