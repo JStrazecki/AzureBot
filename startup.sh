@@ -15,10 +15,14 @@ export PYTHONPATH="/home/site/wwwroot:$PYTHONPATH"
 echo "Python: $(which python3)"
 echo "Python version: $(python3 --version)"
 
-# Install packages
-echo "Installing packages..."
-python3 -m pip install --user --upgrade pip
-python3 -m pip install --user -r requirements.txt
+# Install packages if not already installed
+if [ ! -d "/home/.local/lib/python3.11/site-packages/botbuilder" ]; then
+    echo "Installing packages..."
+    python3 -m pip install --user --upgrade pip
+    python3 -m pip install --user -r requirements.txt
+else
+    echo "Packages already installed, skipping installation"
+fi
 
 # Add user site-packages to Python path
 export PATH="$PATH:/home/.local/bin"
@@ -26,22 +30,23 @@ export PYTHONPATH="$PYTHONPATH:/home/.local/lib/python3.11/site-packages"
 
 # Verify core packages
 echo "Verifying packages..."
-python3 -c "import aiohttp; print('✓ aiohttp installed')"
-python3 -c "import botbuilder.core; print('✓ botbuilder installed')"
-python3 -c "import openai; print('✓ openai installed')"
-python3 -c "import tiktoken; print('✓ tiktoken installed')"
-python3 -c "import gunicorn; print('✓ gunicorn installed')"
+python3 -c "import aiohttp; print('✓ aiohttp installed')" || exit 1
+python3 -c "import botbuilder.core; print('✓ botbuilder installed')" || exit 1
+python3 -c "import openai; print('✓ openai installed')" || exit 1
+python3 -c "import tiktoken; print('✓ tiktoken installed')" || exit 1
+python3 -c "import gunicorn; print('✓ gunicorn installed')" || exit 1
 
-# Verify main app loads
-echo "Testing main app import..."
-python3 -c "from app import APP; print('✓ Main SQL Assistant app loads successfully')"
-
-# Create cache directories
-echo "Creating cache directories..."
+# Create necessary directories
+echo "Creating directories..."
 mkdir -p .pattern_cache
 mkdir -p .exploration_exports
 mkdir -p .query_logs
-mkdir -p .mcp_cache
+mkdir -p .token_usage
+mkdir -p logs
+
+# Verify main app loads
+echo "Testing main app import..."
+python3 -c "from app import APP; print('✓ Main SQL Assistant app loads successfully')" || exit 1
 
 # Start the MAIN app (not test bot!)
 echo "Starting SQL Assistant Bot on port 8000..."
