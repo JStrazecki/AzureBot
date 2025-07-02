@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# app.py - Main application entry point for SQL Assistant Teams Bot
 """
 Main application entry point for SQL Assistant Teams Bot
 Enhanced with MCP integration and performance monitoring
@@ -23,10 +24,10 @@ from botbuilder.core.integration import aiohttp_error_middleware
 from botbuilder.schema import Activity, ErrorResponseException
 from dotenv import load_dotenv
 
-# Import our custom modules
-from good.teams_sql_bot import SQLAssistantBot, EnhancedMCPClient
-from good.azure_openai_sql_translator import AzureOpenAISQLTranslator
-from good.autonomous_sql_explorer import AutonomousSQLExplorer
+# Import our custom modules - FIXED: removed 'good.' prefix
+from teams_sql_bot import SQLAssistantBot, EnhancedMCPClient
+from azure_openai_sql_translator import AzureOpenAISQLTranslator
+from autonomous_sql_explorer import AutonomousSQLExplorer
 
 # Load environment variables
 load_dotenv()
