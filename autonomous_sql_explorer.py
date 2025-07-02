@@ -749,7 +749,8 @@ Respond with JSON:
     async def _execute_safe_query(self, query: str, database: str) -> Dict[str, Any]:
         """Execute query with safety checks"""
         # Import validator
-        from good.query_validator import QueryValidator
+        from query_validator import QueryValidator
+
         
         # Validate query safety
         is_safe, error = QueryValidator.is_query_safe(query)
