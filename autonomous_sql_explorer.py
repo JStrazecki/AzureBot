@@ -750,7 +750,6 @@ Respond with JSON:
         """Execute query with safety checks"""
         # Import validator
         from query_validator import QueryValidator
-
         
         # Validate query safety
         is_safe, error = QueryValidator.is_query_safe(query)

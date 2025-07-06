@@ -21,8 +21,8 @@ from botbuilder.core.user_state import UserState
 from dataclasses import dataclass, asdict
 
 # Import our custom modules
-from good.azure_openai_sql_translator import AzureOpenAISQLTranslator, ConversationContext, SQLQuery
-from good.autonomous_sql_explorer import AutonomousSQLExplorer
+from azure_openai_sql_translator import AzureOpenAISQLTranslator, ConversationContext, SQLQuery
+from autonomous_sql_explorer import AutonomousSQLExplorer
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
