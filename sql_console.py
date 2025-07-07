@@ -1,27 +1,44 @@
-# sql_console.py - Standalone SQL Console for SQL Assistant Bot
+#!/usr/bin/env python3
+# sql_console.py - Fixed SQL Console with proper authentication
 """
-Web-based SQL Console that provides full bot functionality in a browser
-Access at: /console
+SQL Assistant Console - Web-based SQL query interface
+Fixed version with proper Azure Function authentication
 """
 
+import os
 import json
-from datetime import datetime
-from aiohttp.web import Request, Response
 import logging
+import asyncio
+from datetime import datetime
+from typing import Dict, Any, Optional, List
+from aiohttp import web
+from aiohttp.web import Request, Response, json_response
+import aiohttp
 
+# Configure logging
 logger = logging.getLogger(__name__)
 
 class SQLConsole:
-    """Web-based SQL console with full bot functionality"""
+    """SQL Console handler with proper authentication"""
     
     def __init__(self, sql_translator=None, bot=None):
         self.sql_translator = sql_translator
         self.bot = bot
-        self.sessions = {}  # Store session data
+        self.sessions = {}
+        
+        # Get function configuration
+        self.function_url = os.environ.get("AZURE_FUNCTION_URL", "")
+        self.function_key = os.environ.get("AZURE_FUNCTION_KEY", "")
+        
+        # Check if authentication is embedded in URL
+        self.url_has_auth = "code=" in self.function_url
+        
+        logger.info(f"SQL Console initialized")
+        logger.info(f"Function URL configured: {'Yes' if self.function_url else 'No'}")
+        logger.info(f"Authentication method: {'URL-embedded' if self.url_has_auth else 'Header-based'}")
     
     async def console_page(self, request: Request) -> Response:
-        """Serve the SQL console page"""
-        
+        """Serve the SQL console HTML page"""
         html_content = '''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -36,179 +53,206 @@ class SQLConsole:
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-            background: #0f0f0f;
-            color: #e0e0e0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #0f172a;
+            color: #e2e8f0;
             height: 100vh;
-            display: flex;
-            flex-direction: column;
+            overflow: hidden;
         }
 
-        .console-header {
-            background: #1a1a1a;
-            padding: 15px 20px;
-            border-bottom: 1px solid #333;
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            background-color: #1e293b;
+            border-right: 1px solid #334155;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .sidebar-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid #334155;
+        }
+
+        .sidebar-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #f1f5f9;
+            margin-bottom: 0.5rem;
+        }
+
+        .current-db {
+            font-size: 0.875rem;
+            color: #94a3b8;
+        }
+
+        .current-db span {
+            color: #3b82f6;
+            font-weight: 500;
+        }
+
+        /* Database section */
+        .database-section {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .section-title {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: #cbd5e1;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .refresh-button {
+            background: none;
+            border: none;
+            color: #3b82f6;
+            cursor: pointer;
+            font-size: 0.875rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            transition: all 0.2s;
+        }
+
+        .refresh-button:hover {
+            background-color: #1e3a8a;
+            color: #93bbfc;
+        }
+
+        .database-list, .table-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .database-item, .table-item {
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.375rem;
+            cursor: pointer;
+            font-size: 0.875rem;
+            color: #e2e8f0;
+            transition: all 0.2s;
+            position: relative;
+        }
+
+        .database-item:hover, .table-item:hover {
+            background-color: #334155;
+        }
+
+        .database-item.active {
+            background-color: #1e3a8a;
+            color: #93bbfc;
+        }
+
+        .table-item {
+            padding-left: 1.5rem;
+            color: #94a3b8;
+        }
+
+        .table-item:before {
+            content: "📊";
+            position: absolute;
+            left: 0.5rem;
+        }
+
+        /* Main content */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Header */
+        .header {
+            background-color: #1e293b;
+            border-bottom: 1px solid #334155;
+            padding: 1.5rem 2rem;
+        }
+
+        .header-content {
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
-        .console-title {
+        .title {
+            font-size: 1.75rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .quick-actions {
             display: flex;
-            align-items: center;
-            gap: 10px;
+            gap: 0.5rem;
         }
 
-        .console-title h1 {
-            font-size: 1.5rem;
-            color: #667eea;
-            font-weight: 600;
-        }
-
-        .status-indicator {
-            width: 10px;
-            height: 10px;
-            background: #10b981;
-            border-radius: 50%;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.5; }
-            100% { opacity: 1; }
-        }
-
-        .console-info {
-            display: flex;
-            gap: 20px;
-            font-size: 0.9rem;
-            color: #888;
-        }
-
-        .info-item {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-
-        .info-item strong {
-            color: #667eea;
-        }
-
-        .console-container {
-            flex: 1;
-            display: flex;
-            overflow: hidden;
-        }
-
-        .sidebar {
-            width: 250px;
-            background: #1a1a1a;
-            border-right: 1px solid #333;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .sidebar-section {
-            border-bottom: 1px solid #333;
-            padding: 15px;
-        }
-
-        .sidebar-section h3 {
-            font-size: 0.85rem;
-            text-transform: uppercase;
-            color: #888;
-            margin-bottom: 10px;
-            letter-spacing: 0.5px;
-        }
-
-        .database-selector {
-            width: 100%;
-            background: #2a2a2a;
-            border: 1px solid #444;
-            color: #e0e0e0;
-            padding: 8px;
-            border-radius: 4px;
-            font-size: 0.9rem;
-        }
-
-        .database-list {
-            max-height: 200px;
-            overflow-y: auto;
-        }
-
-        .database-item {
-            padding: 8px;
+        .quick-action {
+            padding: 0.5rem 1rem;
+            background-color: #334155;
+            border: 1px solid #475569;
+            border-radius: 0.375rem;
+            color: #e2e8f0;
+            font-size: 0.75rem;
             cursor: pointer;
-            border-radius: 4px;
-            font-size: 0.9rem;
-            transition: background 0.2s;
+            transition: all 0.2s;
         }
 
-        .database-item:hover {
-            background: #2a2a2a;
+        .quick-action:hover {
+            background-color: #475569;
+            border-color: #64748b;
         }
 
-        .database-item.active {
-            background: #667eea;
-            color: white;
-        }
-
-        .table-list {
-            max-height: 300px;
-            overflow-y: auto;
-        }
-
-        .table-item {
-            padding: 8px;
-            cursor: pointer;
-            border-radius: 4px;
-            font-size: 0.85rem;
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            transition: background 0.2s;
-        }
-
-        .table-item:hover {
-            background: #2a2a2a;
-        }
-
-        .table-icon {
-            color: #667eea;
-        }
-
-        .main-content {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-        }
-
+        /* Chat container */
         .chat-container {
             flex: 1;
             display: flex;
             flex-direction: column;
-            background: #0a0a0a;
+            overflow: hidden;
         }
 
         .messages-container {
             flex: 1;
             overflow-y: auto;
-            padding: 20px;
+            padding: 2rem;
             display: flex;
             flex-direction: column;
-            gap: 15px;
+            gap: 1rem;
         }
 
+        /* Messages */
         .message {
             max-width: 80%;
-            animation: fadeIn 0.3s ease-in;
+            animation: fadeIn 0.3s ease-out;
         }
 
         @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         .message.user {
@@ -220,164 +264,155 @@ class SQLConsole:
         }
 
         .message-content {
-            padding: 12px 16px;
-            border-radius: 12px;
+            padding: 1rem 1.5rem;
+            border-radius: 1rem;
             position: relative;
         }
 
         .message.user .message-content {
-            background: #667eea;
+            background-color: #3b82f6;
             color: white;
-            border-bottom-right-radius: 4px;
+            border-bottom-right-radius: 0.25rem;
         }
 
         .message.bot .message-content {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            border-bottom-left-radius: 4px;
+            background-color: #1e293b;
+            border: 1px solid #334155;
+            border-bottom-left-radius: 0.25rem;
         }
 
         .message-header {
             font-size: 0.75rem;
-            margin-bottom: 5px;
-            opacity: 0.7;
+            color: #94a3b8;
+            margin-bottom: 0.5rem;
         }
 
         .message-text {
+            font-size: 0.875rem;
             line-height: 1.5;
             white-space: pre-wrap;
             word-wrap: break-word;
         }
 
-        .message-time {
-            font-size: 0.7rem;
-            opacity: 0.5;
-            margin-top: 5px;
-        }
-
+        /* SQL Result */
         .sql-result {
-            margin-top: 10px;
-            background: #0a0a0a;
-            border: 1px solid #333;
-            border-radius: 8px;
-            overflow: hidden;
+            background-color: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-top: 0.5rem;
+            overflow-x: auto;
         }
 
         .result-header {
-            background: #1a1a1a;
-            padding: 10px 15px;
-            border-bottom: 1px solid #333;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            margin-bottom: 0.75rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid #334155;
         }
 
-        .result-stats {
-            font-size: 0.85rem;
-            color: #888;
+        .result-info {
+            font-size: 0.75rem;
+            color: #94a3b8;
         }
 
         .result-table {
-            overflow-x: auto;
-            max-height: 400px;
-            overflow-y: auto;
-        }
-
-        .result-table table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.9rem;
+            font-size: 0.875rem;
         }
 
         .result-table th {
-            background: #1a1a1a;
-            color: #667eea;
-            padding: 10px;
+            background-color: #0f172a;
+            color: #cbd5e1;
+            padding: 0.5rem;
             text-align: left;
-            position: sticky;
-            top: 0;
-            z-index: 10;
-            border-bottom: 2px solid #333;
+            font-weight: 600;
+            border-bottom: 2px solid #334155;
         }
 
         .result-table td {
-            padding: 8px 10px;
-            border-bottom: 1px solid #222;
+            padding: 0.5rem;
+            border-bottom: 1px solid #1e293b;
+            color: #e2e8f0;
         }
 
         .result-table tr:hover {
-            background: #1a1a1a;
+            background-color: #334155;
         }
 
-        .code-block {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            border-radius: 6px;
-            padding: 12px;
-            margin: 10px 0;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 0.85rem;
-            overflow-x: auto;
+        /* Error message */
+        .error-message {
+            background-color: #7f1d1d;
+            border: 1px solid #991b1b;
+            color: #fecaca;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin-top: 0.5rem;
         }
 
-        .code-block pre {
-            margin: 0;
-            color: #e0e0e0;
+        /* Input area */
+        .input-area {
+            padding: 1.5rem 2rem;
+            background-color: #1e293b;
+            border-top: 1px solid #334155;
         }
 
         .input-container {
-            background: #1a1a1a;
-            border-top: 1px solid #333;
-            padding: 20px;
+            display: flex;
+            gap: 1rem;
+            align-items: flex-end;
         }
 
         .input-wrapper {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 10px;
-        }
-
-        .input-field {
             flex: 1;
-            background: #0a0a0a;
-            border: 1px solid #444;
-            color: #e0e0e0;
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-size: 0.95rem;
-            font-family: inherit;
-            resize: none;
-            min-height: 50px;
-            max-height: 150px;
+            position: relative;
         }
 
-        .input-field:focus {
+        #messageInput {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background-color: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 0.5rem;
+            color: #e2e8f0;
+            font-size: 0.875rem;
+            resize: none;
+            min-height: 2.5rem;
+            max-height: 8rem;
+            font-family: inherit;
+            line-height: 1.5;
+        }
+
+        #messageInput:focus {
             outline: none;
-            border-color: #667eea;
-            background: #0f0f0f;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        #messageInput::placeholder {
+            color: #64748b;
         }
 
         .send-button {
-            background: #667eea;
+            padding: 0.75rem 1.5rem;
+            background-color: #3b82f6;
             color: white;
             border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            font-weight: 600;
+            border-radius: 0.5rem;
+            font-weight: 500;
             cursor: pointer;
             transition: all 0.2s;
+            font-size: 0.875rem;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 0.5rem;
         }
 
-        .send-button:hover {
-            background: #5a67d8;
-            transform: translateY(-1px);
-        }
-
-        .send-button:active {
-            transform: translateY(0);
+        .send-button:hover:not(:disabled) {
+            background-color: #2563eb;
         }
 
         .send-button:disabled {
@@ -385,225 +420,147 @@ class SQLConsole:
             cursor: not-allowed;
         }
 
-        .quick-commands {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-
-        .quick-command {
-            background: #2a2a2a;
-            border: 1px solid #444;
-            color: #e0e0e0;
-            padding: 6px 12px;
-            border-radius: 16px;
-            font-size: 0.85rem;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .quick-command:hover {
-            background: #667eea;
-            border-color: #667eea;
-            color: white;
-        }
-
-        .loading-indicator {
+        /* Typing indicator */
+        .typing-indicator {
             display: flex;
             align-items: center;
-            gap: 10px;
-            color: #888;
-            font-size: 0.9rem;
-            padding: 10px;
-        }
-
-        .typing-dots {
-            display: flex;
-            gap: 4px;
+            gap: 0.5rem;
+            padding: 1rem;
+            background-color: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 1rem;
+            border-bottom-left-radius: 0.25rem;
+            max-width: 200px;
         }
 
         .typing-dot {
             width: 8px;
             height: 8px;
-            background: #667eea;
+            background-color: #64748b;
             border-radius: 50%;
-            animation: typing 1.4s infinite;
+            animation: typing 1.4s infinite ease-in-out;
+        }
+
+        .typing-dot:nth-child(1) {
+            animation-delay: -0.32s;
         }
 
         .typing-dot:nth-child(2) {
-            animation-delay: 0.2s;
-        }
-
-        .typing-dot:nth-child(3) {
-            animation-delay: 0.4s;
+            animation-delay: -0.16s;
         }
 
         @keyframes typing {
-            0%, 60%, 100% {
-                opacity: 0.3;
+            0%, 80%, 100% {
                 transform: scale(0.8);
+                opacity: 0.5;
             }
-            30% {
-                opacity: 1;
+            40% {
                 transform: scale(1);
+                opacity: 1;
             }
         }
 
-        .error-message {
-            background: #dc2626;
-            color: white;
-            padding: 10px 15px;
-            border-radius: 6px;
-            margin: 10px 0;
+        /* Loading indicator */
+        .loading-indicator {
+            text-align: center;
+            color: #64748b;
+            font-size: 0.875rem;
+            padding: 1rem;
         }
 
-        .success-message {
-            background: #10b981;
-            color: white;
-            padding: 10px 15px;
-            border-radius: 6px;
-            margin: 10px 0;
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
         }
 
-        .help-panel {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            border-radius: 8px;
-            padding: 15px;
-            margin: 10px 0;
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
         }
 
-        .help-panel h4 {
-            color: #667eea;
-            margin-bottom: 10px;
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
         }
 
-        .help-panel ul {
-            list-style: none;
-            padding-left: 0;
-        }
-
-        .help-panel li {
-            padding: 5px 0;
-            color: #ccc;
-        }
-
-        .help-panel code {
-            background: #2a2a2a;
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-size: 0.85rem;
-            color: #667eea;
-        }
-
-        @media (max-width: 768px) {
-            .sidebar {
-                display: none;
-            }
-            
-            .message {
-                max-width: 95%;
-            }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #475569;
         }
     </style>
 </head>
 <body>
-    <div class="console-header">
-        <div class="console-title">
-            <div class="status-indicator"></div>
-            <h1>SQL Assistant Console</h1>
-        </div>
-        <div class="console-info">
-            <div class="info-item">
-                <strong>Database:</strong>
-                <span id="currentDatabase">Not selected</span>
-            </div>
-            <div class="info-item">
-                <strong>Status:</strong>
-                <span id="connectionStatus">Connected</span>
-            </div>
-            <div class="info-item">
-                <strong>Mode:</strong>
-                <span>Natural Language</span>
-            </div>
-        </div>
-    </div>
-
-    <div class="console-container">
+    <div class="container">
+        <!-- Sidebar -->
         <div class="sidebar">
-            <div class="sidebar-section">
-                <h3>Databases</h3>
-                <button class="quick-command" onclick="refreshDatabases()" style="width: 100%; margin-bottom: 10px;">
-                    🔄 Refresh Databases
-                </button>
+            <div class="sidebar-header">
+                <div class="sidebar-title">SQL Explorer</div>
+                <div class="current-db">Current: <span id="currentDatabase">master</span></div>
+            </div>
+            
+            <div class="database-section">
+                <div class="section-header">
+                    <div class="section-title">Databases</div>
+                    <button class="refresh-button" onclick="refreshDatabases()">Refresh</button>
+                </div>
                 <div class="database-list" id="databaseList">
                     <div class="loading-indicator">Loading databases...</div>
                 </div>
             </div>
             
-            <div class="sidebar-section">
-                <h3>Tables</h3>
-                <div class="table-list" id="tableList">
-                    <div style="color: #666; font-size: 0.85rem;">Select a database first</div>
+            <div class="database-section">
+                <div class="section-header">
+                    <div class="section-title">Tables</div>
                 </div>
-            </div>
-            
-            <div class="sidebar-section">
-                <h3>Quick Actions</h3>
-                <div style="display: flex; flex-direction: column; gap: 8px;">
-                    <button class="quick-command" onclick="showHelp()" style="width: 100%;">
-                        ❓ Help
-                    </button>
-                    <button class="quick-command" onclick="showUsage()" style="width: 100%;">
-                        📊 Usage Stats
-                    </button>
-                    <button class="quick-command" onclick="clearChat()" style="width: 100%;">
-                        🗑️ Clear Chat
-                    </button>
+                <div class="table-list" id="tableList">
+                    <div class="loading-indicator">Select a database</div>
                 </div>
             </div>
         </div>
 
+        <!-- Main Content -->
         <div class="main-content">
+            <div class="header">
+                <div class="header-content">
+                    <h1 class="title">SQL Assistant Console</h1>
+                    <div class="quick-actions">
+                        <button class="quick-action" onclick="quickCommand('SHOW TABLES')">Show Tables</button>
+                        <button class="quick-action" onclick="quickCommand('SHOW DATABASES')">Show Databases</button>
+                        <button class="quick-action" onclick="quickCommand('help')">Help</button>
+                    </div>
+                </div>
+            </div>
+
             <div class="chat-container">
                 <div class="messages-container" id="messagesContainer">
+                    <!-- Welcome message -->
                     <div class="message bot">
                         <div class="message-content">
                             <div class="message-header">SQL Assistant</div>
-                            <div class="message-text">Welcome to SQL Assistant Console! 🚀
+                            <div class="message-text">Welcome to SQL Assistant Console! I can help you explore databases and write SQL queries.
 
-I can help you query your databases using natural language. Just type your question and I'll translate it to SQL and execute it for you.
+Try commands like:
+• "Show me all tables"
+• "What columns does the users table have?"
+• "Find the top 10 customers by order count"
 
-Try:
-- "Show me all tables"
-- "How many records are in each table?"
-- "What are the top 10 customers by revenue?"
-
-Select a database from the sidebar to get started!</div>
-                            <div class="message-time">${new Date().toLocaleTimeString()}</div>
+Type 'help' for more information.</div>
                         </div>
                     </div>
                 </div>
 
-                <div class="input-container">
-                    <div class="input-wrapper">
-                        <textarea 
-                            id="messageInput" 
-                            class="input-field" 
-                            placeholder="Ask a question or type a command..."
-                            onkeydown="handleKeyPress(event)"
-                        ></textarea>
+                <div class="input-area">
+                    <div class="input-container">
+                        <div class="input-wrapper">
+                            <textarea 
+                                id="messageInput" 
+                                placeholder="Type your SQL query or ask a question..."
+                                rows="1"
+                                onkeydown="handleKeyPress(event)"
+                            ></textarea>
+                        </div>
                         <button id="sendButton" class="send-button" onclick="sendMessage()">
-                            <span>Send</span>
-                            <span>→</span>
+                            Send
                         </button>
-                    </div>
-                    <div class="quick-commands">
-                        <div class="quick-command" onclick="quickCommand('/help')">Help</div>
-                        <div class="quick-command" onclick="quickCommand('/tables')">Show Tables</div>
-                        <div class="quick-command" onclick="quickCommand('/usage')">Usage</div>
-                        <div class="quick-command" onclick="quickCommand('show me sample data')">Sample Data</div>
-                        <div class="quick-command" onclick="quickCommand('/explore')">Deep Explore</div>
                     </div>
                 </div>
             </div>
@@ -611,9 +568,22 @@ Select a database from the sidebar to get started!</div>
     </div>
 
     <script>
-        let currentDatabase = null;
-        let sessionId = generateSessionId();
+        let currentDatabase = 'master';
         let isProcessing = false;
+        let sessionId = generateSessionId();
+
+        // Initialize
+        window.onload = async function() {
+            await refreshDatabases();
+            document.getElementById('messageInput').focus();
+            
+            // Auto-resize textarea
+            const textarea = document.getElementById('messageInput');
+            textarea.addEventListener('input', function() {
+                this.style.height = 'auto';
+                this.style.height = this.scrollHeight + 'px';
+            });
+        };
 
         function generateSessionId() {
             return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
@@ -712,9 +682,8 @@ Select a database from the sidebar to get started!</div>
             
             messageDiv.innerHTML = `
                 <div class="message-content">
-                    <div class="message-header">${header}</div>
+                    <div class="message-header">${header} • ${time}</div>
                     <div class="message-text">${escapeHtml(text)}</div>
-                    <div class="message-time">${time}</div>
                 </div>
             `;
             
@@ -727,101 +696,57 @@ Select a database from the sidebar to get started!</div>
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message bot';
             
+            const time = new Date().toLocaleTimeString();
+            
             let content = `
                 <div class="message-content">
-                    <div class="message-header">SQL Assistant</div>
+                    <div class="message-header">SQL Assistant • ${time}</div>
                     <div class="message-text">${escapeHtml(result.explanation || '')}</div>
             `;
             
-            // Add SQL query
-            if (result.query) {
-                content += `
-                    <div class="code-block">
-                        <pre>${escapeHtml(result.query)}</pre>
-                    </div>
-                `;
-            }
-            
-            // Add results table
-            if (result.rows && result.rows.length > 0) {
+            if (result.sql_query) {
                 content += `
                     <div class="sql-result">
                         <div class="result-header">
-                            <span>Query Results</span>
-                            <span class="result-stats">${result.row_count} rows • ${result.execution_time_ms || 0}ms</span>
+                            <div class="result-info">
+                                Query executed on: ${result.database || currentDatabase}
+                            </div>
+                            <div class="result-info">
+                                ${result.row_count || 0} rows • ${result.execution_time || 0}ms
+                            </div>
                         </div>
-                        <div class="result-table">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        ${Object.keys(result.rows[0]).map(col => 
-                                            `<th>${escapeHtml(col)}</th>`
-                                        ).join('')}
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    ${result.rows.slice(0, 100).map(row => `
-                                        <tr>
-                                            ${Object.values(row).map(val => 
-                                                `<td>${escapeHtml(String(val ?? 'NULL'))}</td>`
-                                            ).join('')}
-                                        </tr>
-                                    `).join('')}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
+                        <pre style="color: #94a3b8; margin-bottom: 1rem; font-size: 0.75rem;">${escapeHtml(result.sql_query)}</pre>
                 `;
                 
-                if (result.row_count > 100) {
-                    content += `<div style="color: #888; font-size: 0.85rem; margin-top: 10px;">Showing first 100 of ${result.row_count} rows</div>`;
+                if (result.rows && result.rows.length > 0) {
+                    // Create table
+                    const columns = Object.keys(result.rows[0]);
+                    content += '<table class="result-table"><thead><tr>';
+                    columns.forEach(col => {
+                        content += `<th>${escapeHtml(col)}</th>`;
+                    });
+                    content += '</tr></thead><tbody>';
+                    
+                    result.rows.forEach(row => {
+                        content += '<tr>';
+                        columns.forEach(col => {
+                            const value = row[col] === null ? 'NULL' : String(row[col]);
+                            content += `<td>${escapeHtml(value)}</td>`;
+                        });
+                        content += '</tr>';
+                    });
+                    
+                    content += '</tbody></table>';
+                } else {
+                    content += '<div style="color: #64748b; padding: 1rem;">No results returned</div>';
                 }
-            } else if (result.content) {
-                content += `<div class="message-text">${escapeHtml(result.content)}</div>`;
+                
+                content += '</div>';
             }
             
-            content += `
-                    <div class="message-time">${new Date().toLocaleTimeString()}</div>
-                </div>
-            `;
+            content += '</div>';
             
             messageDiv.innerHTML = content;
-            messagesContainer.appendChild(messageDiv);
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-        }
-
-        function addHelpMessage(content) {
-            const messagesContainer = document.getElementById('messagesContainer');
-            const messageDiv = document.createElement('div');
-            messageDiv.className = 'message bot';
-            
-            messageDiv.innerHTML = `
-                <div class="message-content">
-                    <div class="message-header">SQL Assistant</div>
-                    <div class="help-panel">
-                        <h4>Available Commands</h4>
-                        <ul>
-                            <li><code>/help</code> - Show this help message</li>
-                            <li><code>/database list</code> - List all databases</li>
-                            <li><code>/database set &lt;name&gt;</code> - Set current database</li>
-                            <li><code>/tables</code> - Show tables in current database</li>
-                            <li><code>/usage</code> - View token usage and costs</li>
-                            <li><code>/explore &lt;question&gt;</code> - Deep exploration mode</li>
-                            <li><code>/clear</code> - Clear conversation history</li>
-                        </ul>
-                        
-                        <h4 style="margin-top: 15px;">Natural Language Examples</h4>
-                        <ul>
-                            <li>"Show me all customers"</li>
-                            <li>"What are the top 10 products by sales?"</li>
-                            <li>"How many orders were placed this month?"</li>
-                            <li>"List employees with salary above 50000"</li>
-                        </ul>
-                    </div>
-                    <div class="message-time">${new Date().toLocaleTimeString()}</div>
-                </div>
-            `;
-            
             messagesContainer.appendChild(messageDiv);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
@@ -831,11 +756,30 @@ Select a database from the sidebar to get started!</div>
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message bot';
             
+            const time = new Date().toLocaleTimeString();
+            
             messageDiv.innerHTML = `
                 <div class="message-content">
-                    <div class="message-header">SQL Assistant</div>
+                    <div class="message-header">SQL Assistant • ${time}</div>
                     <div class="error-message">❌ ${escapeHtml(error)}</div>
-                    <div class="message-time">${new Date().toLocaleTimeString()}</div>
+                </div>
+            `;
+            
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function addHelpMessage(content) {
+            const messagesContainer = document.getElementById('messagesContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message bot';
+            
+            const time = new Date().toLocaleTimeString();
+            
+            messageDiv.innerHTML = `
+                <div class="message-content">
+                    <div class="message-header">SQL Assistant • ${time}</div>
+                    <div class="message-text">${content}</div>
                 </div>
             `;
             
@@ -848,17 +792,12 @@ Select a database from the sidebar to get started!</div>
             const typingDiv = document.createElement('div');
             typingDiv.id = 'typingIndicator';
             typingDiv.className = 'message bot';
-            
             typingDiv.innerHTML = `
-                <div class="message-content">
-                    <div class="loading-indicator">
-                        <div class="typing-dots">
-                            <div class="typing-dot"></div>
-                            <div class="typing-dot"></div>
-                            <div class="typing-dot"></div>
-                        </div>
-                        <span>SQL Assistant is thinking...</span>
-                    </div>
+                <div class="typing-indicator">
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                    <span>SQL Assistant is thinking...</span>
                 </div>
             `;
             
@@ -938,19 +877,18 @@ Select a database from the sidebar to get started!</div>
                 if (result.status === 'success' && result.tables) {
                     tableList.innerHTML = '';
                     
-                    result.tables.forEach(table => {
-                        const tableItem = document.createElement('div');
-                        tableItem.className = 'table-item';
-                        tableItem.innerHTML = `
-                            <span class="table-icon">📊</span>
-                            <span>${table}</span>
-                        `;
-                        tableItem.onclick = () => quickCommand(`show me data from ${table}`);
-                        tableList.appendChild(tableItem);
-                    });
-                    
                     if (result.tables.length === 0) {
                         tableList.innerHTML = '<div style="color: #666; font-size: 0.85rem;">No tables found</div>';
+                    } else {
+                        result.tables.forEach(table => {
+                            const tableItem = document.createElement('div');
+                            tableItem.className = 'table-item';
+                            tableItem.textContent = table;
+                            tableItem.onclick = () => {
+                                document.getElementById('messageInput').value = `DESCRIBE ${table}`;
+                            };
+                            tableList.appendChild(tableItem);
+                        });
                     }
                 } else {
                     tableList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Error loading tables</div>';
@@ -959,43 +897,6 @@ Select a database from the sidebar to get started!</div>
                 tableList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Connection error</div>';
             }
         }
-
-        function clearChat() {
-            const messagesContainer = document.getElementById('messagesContainer');
-            messagesContainer.innerHTML = `
-                <div class="message bot">
-                    <div class="message-content">
-                        <div class="message-header">SQL Assistant</div>
-                        <div class="message-text">Chat cleared. Ready for new queries!</div>
-                        <div class="message-time">${new Date().toLocaleTimeString()}</div>
-                    </div>
-                </div>
-            `;
-        }
-
-        function showHelp() {
-            quickCommand('/help');
-        }
-
-        function showUsage() {
-            quickCommand('/usage');
-        }
-
-        // Initialize on load
-        document.addEventListener('DOMContentLoaded', () => {
-            refreshDatabases();
-            document.getElementById('messageInput').focus();
-        });
-
-        // Handle window resize
-        let resizeTimeout;
-        window.addEventListener('resize', () => {
-            clearTimeout(resizeTimeout);
-            resizeTimeout = setTimeout(() => {
-                const messagesContainer = document.getElementById('messagesContainer');
-                messagesContainer.scrollTop = messagesContainer.scrollHeight;
-            }, 100);
-        });
     </script>
 </body>
 </html>'''
@@ -1003,78 +904,81 @@ Select a database from the sidebar to get started!</div>
         return Response(text=html_content, content_type='text/html')
     
     async def handle_message(self, request: Request) -> Response:
-        """Handle console messages with full bot functionality"""
+        """Handle incoming console messages with proper error handling"""
         try:
             data = await request.json()
-            message = data.get('message', '')
-            database = data.get('database')
-            session_id = data.get('session_id', 'default')
+            message = data.get('message', '').strip()
+            database = data.get('database', 'master')
+            session_id = data.get('session_id')
             
-            # Create or get session
-            if session_id not in self.sessions:
-                from azure_openai_sql_translator import ConversationContext
-                self.sessions[session_id] = {
-                    'context': ConversationContext(messages=[]),
-                    'current_database': database
-                }
+            # Check for special commands
+            if message.lower() in ['help', '?']:
+                return json_response({
+                    'status': 'success',
+                    'response_type': 'help',
+                    'content': self._get_help_text()
+                })
             
-            session = self.sessions[session_id]
-            context = session['context']
+            if message.lower() in ['show databases', 'databases']:
+                databases = await self._get_databases()
+                return json_response({
+                    'status': 'success',
+                    'response_type': 'text',
+                    'content': f"Available databases:\n" + "\n".join(f"• {db}" for db in databases)
+                })
             
-            # Update current database
-            if database:
-                context.current_database = database
-                session['current_database'] = database
-            
-            # Process commands
-            if message.startswith('/'):
-                return await self._handle_command(message, session)
-            
-            # Process natural language query
-            if not self.sql_translator:
+            # Process SQL query
+            if self.sql_translator and self.bot:
+                try:
+                    # Translate natural language to SQL
+                    from sqlquery import SQLQuery
+                    
+                    # Create translation request
+                    sql_result = await self.sql_translator.translate_to_sql(
+                        message,
+                        database_schema=await self._get_schema_context(database),
+                        current_database=database
+                    )
+                    
+                    if not sql_result.query:
+                        return json_response({
+                            'status': 'error',
+                            'error': 'Could not translate to SQL query'
+                        })
+                    
+                    # Execute the query
+                    result = await self._execute_sql_query_with_auth(sql_result)
+                    
+                    if result.get('error'):
+                        return json_response({
+                            'status': 'error',
+                            'error': result['error']
+                        })
+                    
+                    return json_response({
+                        'status': 'success',
+                        'response_type': 'sql_result',
+                        'sql_query': sql_result.query,
+                        'database': sql_result.database or database,
+                        'explanation': sql_result.explanation,
+                        'rows': result.get('rows', []),
+                        'row_count': result.get('row_count', 0),
+                        'execution_time': result.get('execution_time_ms', 0),
+                        'current_database': database
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Error processing query: {e}", exc_info=True)
+                    return json_response({
+                        'status': 'error',
+                        'error': f'Query processing error: {str(e)}'
+                    })
+            else:
                 return json_response({
                     'status': 'error',
                     'error': 'SQL translator not available'
                 })
-            
-            # Translate to SQL
-            sql_query = self.sql_translator.translate_to_sql(message, context)
-            
-            if not sql_query.query:
-                return json_response({
-                    'status': 'success',
-                    'response_type': 'text',
-                    'content': sql_query.explanation or "I couldn't translate that to SQL. Could you rephrase?"
-                })
-            
-            # Execute query
-            result = await self._execute_sql_query(sql_query)
-            
-            if result.get('error'):
-                return json_response({
-                    'status': 'error',
-                    'error': result['error']
-                })
-            
-            # Format response
-            response = {
-                'status': 'success',
-                'response_type': 'sql_result',
-                'explanation': sql_query.explanation,
-                'query': sql_query.query,
-                'database': sql_query.database,
-                'rows': result.get('rows', []),
-                'row_count': result.get('row_count', 0),
-                'execution_time_ms': result.get('execution_time_ms', 0),
-                'current_database': context.current_database
-            }
-            
-            # Add natural language explanation if available
-            if 'formatted_result' in result and result['formatted_result']:
-                response['content'] = result['formatted_result'].get('natural_language', '')
-            
-            return json_response(response)
-            
+                
         except Exception as e:
             logger.error(f"Console message error: {e}", exc_info=True)
             return json_response({
@@ -1082,136 +986,56 @@ Select a database from the sidebar to get started!</div>
                 'error': str(e)
             })
     
-    async def _handle_command(self, command: str, session: dict) -> Response:
-        """Handle console commands"""
-        parts = command.split()
-        cmd = parts[0].lower()
-        
-        if cmd == '/help':
-            return json_response({
-                'status': 'success',
-                'response_type': 'help',
-                'content': 'Help content'
-            })
-        
-        elif cmd == '/database':
-            if len(parts) > 1 and parts[1] == 'list':
-                databases = await self._get_databases()
-                content = f"Available Databases ({len(databases)}):\n"
-                for db in databases:
-                    content += f"• {db}\n"
-                return json_response({
-                    'status': 'success',
-                    'response_type': 'text',
-                    'content': content
-                })
-            
-            elif len(parts) > 2 and parts[1] == 'set':
-                db_name = ' '.join(parts[2:])
-                session['current_database'] = db_name
-                session['context'].current_database = db_name
-                return json_response({
-                    'status': 'success',
-                    'response_type': 'text',
-                    'content': f'Database set to: {db_name}',
-                    'current_database': db_name,
-                    'refresh_tables': True
-                })
-        
-        elif cmd == '/tables':
-            if not session.get('current_database'):
-                return json_response({
-                    'status': 'success',
-                    'response_type': 'text',
-                    'content': 'Please select a database first using: /database set <name>'
-                })
-            
-            # Get tables for current database
-            tables = await self._get_tables(session['current_database'])
-            content = f"Tables in {session['current_database']} ({len(tables)}):\n"
-            for table in tables:
-                content += f"• {table}\n"
-            return json_response({
-                'status': 'success',
-                'response_type': 'text',
-                'content': content
-            })
-        
-        elif cmd == '/usage':
-            if self.sql_translator and hasattr(self.sql_translator, 'token_limiter'):
-                usage = self.sql_translator.token_limiter.get_usage_summary()
-                content = f"Token Usage:\n"
-                content += f"Daily: {usage['daily']['used']:,} / {usage['daily']['limit']:,} ({usage['daily']['percentage']:.1f}%)\n"
-                content += f"Cost: ${usage['daily']['cost']:.3f}\n"
-                content += f"Remaining: {usage['daily']['remaining']:,} tokens"
-            else:
-                content = "Usage tracking not available"
-            
-            return json_response({
-                'status': 'success',
-                'response_type': 'text',
-                'content': content
-            })
-        
-        elif cmd == '/clear':
-            from azure_openai_sql_translator import ConversationContext
-            session['context'] = ConversationContext(messages=[])
-            return json_response({
-                'status': 'success',
-                'response_type': 'text',
-                'content': 'Conversation history cleared.'
-            })
-        
-        else:
-            return json_response({
-                'status': 'success',
-                'response_type': 'text',
-                'content': f'Unknown command: {cmd}'
-            })
+    def _get_help_text(self) -> str:
+        """Get help text for console"""
+        return """SQL Assistant Console Commands:
+
+**Natural Language Queries:**
+• "Show me all customers"
+• "What's the total revenue by month?"
+• "Find products with low inventory"
+
+**SQL Commands:**
+• SELECT, WITH, and other read queries
+• Direct SQL syntax supported
+
+**Special Commands:**
+• help - Show this help message
+• show databases - List all databases
+• show tables - List tables in current database
+
+**Tips:**
+• Click on a database to switch context
+• Click on a table name to describe it
+• Use natural language or SQL syntax
+• Results are limited to prevent overload"""
     
-    async def _get_databases(self) -> list:
-        """Get list of databases"""
-        if not self.bot:
-            return []
-        
+    async def _get_databases(self) -> List[str]:
+        """Get list of databases with proper authentication"""
         try:
-            from azure_openai_sql_translator import SQLQuery
+            # Call Azure Function with proper auth
+            result = await self._call_function_metadata()
             
-            # Create a metadata query
-            metadata_query = SQLQuery(
-                query="SELECT name FROM sys.databases WHERE state = 0 AND name NOT IN ('master', 'tempdb', 'model', 'msdb')",
-                database="master",
-                explanation="Getting list of databases",
-                confidence=1.0
-            )
-            
-            result = await self.bot._execute_sql_query(metadata_query, "raw")
-            
-            if result.get('rows'):
-                # First try master database to see all databases
-                databases = [row['name'] for row in result['rows']]
-                databases.insert(0, 'master')  # Add master at the beginning
-                return databases
+            if result and 'databases' in result:
+                return result['databases']
             else:
-                # Fallback: use function metadata endpoint
-                function_result = await self._call_function_metadata()
-                return function_result.get('databases', [])
+                # Fallback to default
+                return ['master', 'tempdb', 'model', 'msdb']
                 
         except Exception as e:
             logger.error(f"Error getting databases: {e}")
-            return []
+            return ['master']
     
-    async def _get_tables(self, database: str) -> list:
-        """Get list of tables for a database"""
-        if not self.bot:
-            return []
-        
+    async def _get_tables(self, database: str) -> List[str]:
+        """Get list of tables in database"""
         try:
-            from azure_openai_sql_translator import SQLQuery
+            if not self.sql_translator or not self.bot:
+                return []
             
             # Create a schema query
+            from sqlquery import SQLQuery
             schema_query = SQLQuery(
-                query="""SELECT TABLE_NAME 
+                query=f"""SELECT TABLE_NAME 
                         FROM INFORMATION_SCHEMA.TABLES 
                         WHERE TABLE_TYPE = 'BASE TABLE' 
                         ORDER BY TABLE_NAME""",
@@ -1220,7 +1044,7 @@ Select a database from the sidebar to get started!</div>
                 confidence=1.0
             )
             
-            result = await self.bot._execute_sql_query(schema_query, "raw")
+            result = await self._execute_sql_query_with_auth(schema_query)
             
             if result.get('rows'):
                 return [row['TABLE_NAME'] for row in result['rows']]
@@ -1231,41 +1055,93 @@ Select a database from the sidebar to get started!</div>
             logger.error(f"Error getting tables: {e}")
             return []
     
-    async def _call_function_metadata(self) -> dict:
-        """Call Azure Function to get metadata"""
+    async def _get_schema_context(self, database: str) -> str:
+        """Get schema context for translation"""
         try:
-            import aiohttp
-            function_url = os.environ.get("AZURE_FUNCTION_URL", "")
-            
-            if not function_url:
+            tables = await self._get_tables(database)
+            if tables:
+                return f"Database: {database}\nTables: {', '.join(tables[:10])}"
+            return f"Database: {database}"
+        except:
+            return f"Database: {database}"
+    
+    async def _call_function_metadata(self) -> dict:
+        """Call Azure Function to get metadata with proper authentication"""
+        try:
+            if not self.function_url:
+                logger.error("Azure Function URL not configured")
                 return {'databases': []}
+            
+            headers = {"Content-Type": "application/json"}
+            
+            # Add authentication header if not embedded in URL
+            if not self.url_has_auth and self.function_key:
+                headers["x-functions-key"] = self.function_key
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    function_url,
+                    self.function_url,
                     json={"query_type": "metadata"},
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                     timeout=aiohttp.ClientTimeout(total=10)
                 ) as response:
                     if response.status == 200:
                         return await response.json()
                     else:
+                        error_text = await response.text()
+                        logger.error(f"Function metadata call failed: {response.status} - {error_text}")
                         return {'databases': []}
                         
         except Exception as e:
             logger.error(f"Error calling function metadata: {e}")
             return {'databases': []}
     
-    async def _execute_sql_query(self, sql_query) -> dict:
-        """Execute SQL query using bot's executor"""
-        if not self.bot:
-            return {'error': 'Bot not available'}
+    async def _execute_sql_query_with_auth(self, sql_query) -> dict:
+        """Execute SQL query using Azure Function with proper authentication"""
+        if not self.function_url:
+            return {'error': 'Azure Function URL not configured'}
         
         try:
-            return await self.bot._execute_sql_query(sql_query, "full")
+            headers = {"Content-Type": "application/json"}
+            
+            # Add authentication header if not embedded in URL
+            if not self.url_has_auth and self.function_key:
+                headers["x-functions-key"] = self.function_key
+            
+            payload = {
+                "query_type": "single",
+                "query": sql_query.query,
+                "database": sql_query.database or "master",
+                "output_format": "raw"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.function_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Function call failed: {response.status} - {error_text}")
+                        
+                        # Parse error message for user
+                        if response.status == 401:
+                            return {'error': 'Authentication failed. Please check Azure Function configuration.'}
+                        elif response.status == 400:
+                            return {'error': f'Invalid request: {error_text}'}
+                        else:
+                            return {'error': f'Server error ({response.status}): {error_text[:200]}'}
+                            
+        except aiohttp.ClientTimeout:
+            return {'error': 'Query timeout - please try a simpler query'}
         except Exception as e:
-            logger.error(f"Error executing query: {e}")
-            return {'error': str(e)}
+            logger.error(f"Error executing query: {e}", exc_info=True)
+            return {'error': f'Connection error: {str(e)}'}
     
     async def get_databases_api(self, request: Request) -> Response:
         """API endpoint to get databases"""
@@ -1276,6 +1152,7 @@ Select a database from the sidebar to get started!</div>
                 'databases': databases
             })
         except Exception as e:
+            logger.error(f"Database API error: {e}", exc_info=True)
             return json_response({
                 'status': 'error',
                 'error': str(e)
@@ -1297,6 +1174,7 @@ Select a database from the sidebar to get started!</div>
                 'tables': tables
             })
         except Exception as e:
+            logger.error(f"Tables API error: {e}", exc_info=True)
             return json_response({
                 'status': 'error',
                 'error': str(e)
@@ -1317,4 +1195,5 @@ def add_console_routes(app, sql_translator=None, bot=None):
     app.router.add_get('/console/api/databases', console.get_databases_api)
     app.router.add_get('/console/api/tables', console.get_tables_api)
     
+    logger.info("SQL Console routes added successfully")
     return console
