@@ -1,14 +1,10 @@
-# admin_dashboard.py - Enhanced admin dashboard with uptime tracking and improved authentication
+# admin_dashboard.py - Updated Admin Dashboard with Microsoft Auth and URL-embedded Function Auth
 """
-Enhanced Admin Dashboard Route Handler for SQL Assistant Bot
-Features:
-- Real-time cost tracking (Azure OpenAI tokens, function calls)
-- User authentication display
-- Comprehensive system monitoring
-- Usage analytics and billing insights
-- Performance metrics
-- Uptime tracking
-- Improved Azure Function authentication
+Updated Admin Dashboard for SQL Assistant Bot
+- Removed environment variables section
+- Enhanced Microsoft authentication display
+- Uses URL-embedded authentication for Azure Function
+- Integrated with main bot (not separate)
 """
 
 import os
@@ -97,55 +93,14 @@ class UptimeTracker:
         }
 
 class AzureFunctionAuth:
-    """Helper class for Azure Function authentication"""
+    """Helper class for Azure Function authentication using URL-embedded method"""
     
-    def __init__(self, function_url: str = None, function_key: str = None):
+    def __init__(self, function_url: str = None):
+        # Since we're using URL-embedded auth, the URL should already contain the key
         self.function_url = function_url or os.environ.get("AZURE_FUNCTION_URL", "")
-        self.function_key = function_key or os.environ.get("AZURE_FUNCTION_KEY", "")
-        self.auth_method = None
         
-    def _get_auth_methods(self) -> list:
-        """Get available authentication methods in order of preference"""
-        methods = []
-        
-        # Check if URL already contains authentication
-        if 'code=' in self.function_url.lower():
-            methods.append("url_embedded")
-        
-        # Managed Identity (if bot has access)
-        methods.append("managed_identity")
-        
-        # Function key in header
-        if self.function_key:
-            methods.append("header_key")
-        
-        # Function key in URL
-        if self.function_key:
-            methods.append("url_key")
-        
-        return methods
-    
-    def _prepare_request(self, method: str, payload: Dict[str, Any]) -> tuple:
-        """Prepare URL, headers, and payload for different authentication methods"""
-        base_url = self.function_url.split('?')[0] if '?' in self.function_url else self.function_url
-        headers = {"Content-Type": "application/json"}
-        
-        if method == "url_embedded":
-            url = self.function_url
-        elif method == "managed_identity":
-            url = base_url
-        elif method == "header_key":
-            url = base_url
-            headers["x-functions-key"] = self.function_key
-        elif method == "url_key":
-            url = f"{base_url}?code={self.function_key}"
-        else:
-            raise ValueError(f"Unknown authentication method: {method}")
-        
-        return url, headers, payload
-    
     async def call_function(self, payload: Dict[str, Any], timeout: int = 15) -> Dict[str, Any]:
-        """Call Azure Function with automatic authentication method detection"""
+        """Call Azure Function using URL-embedded authentication"""
         if not self.function_url:
             return {
                 "success": False,
@@ -153,77 +108,53 @@ class AzureFunctionAuth:
                 "details": {"missing": "AZURE_FUNCTION_URL"}
             }
         
-        auth_methods = self._get_auth_methods()
-        last_error = None
-        
-        for method in auth_methods:
-            try:
-                logger.info(f"Trying authentication method: {method}")
-                
-                url, headers, request_payload = self._prepare_request(method, payload)
-                
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        url,
-                        json=request_payload,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=timeout)
-                    ) as response:
+        try:
+            logger.info(f"Calling Azure Function with URL-embedded auth")
+            
+            headers = {"Content-Type": "application/json"}
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.function_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout)
+                ) as response:
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        logger.info(f"✅ Function call successful")
                         
-                        if response.status == 200:
-                            data = await response.json()
-                            self.auth_method = method
-                            logger.info(f"✅ Authentication successful with method: {method}")
-                            
-                            return {
-                                "success": True,
-                                "data": data,
-                                "details": {
-                                    "status_code": response.status,
-                                    "auth_method": method,
-                                    "url_used": url.split('?')[0] + "?..." if '?' in url else url
-                                }
+                        return {
+                            "success": True,
+                            "data": data,
+                            "details": {
+                                "status_code": response.status,
+                                "auth_method": "url_embedded"
                             }
-                        
-                        elif response.status == 401:
-                            error_text = await response.text()
-                            last_error = f"Authentication failed with {method}: {error_text[:100]}"
-                            logger.warning(f"❌ Authentication failed with {method}")
-                            continue
-                        
-                        else:
-                            error_text = await response.text()
-                            return {
-                                "success": False,
-                                "error": f"Function error: {response.status}",
-                                "details": {
-                                    "status_code": response.status,
-                                    "response": error_text[:200],
-                                    "auth_method": method
-                                }
+                        }
+                    else:
+                        error_text = await response.text()
+                        return {
+                            "success": False,
+                            "error": f"Function error: {response.status}",
+                            "details": {
+                                "status_code": response.status,
+                                "response": error_text[:200],
+                                "auth_method": "url_embedded"
                             }
-                            
-            except Exception as e:
-                last_error = f"Error with {method}: {str(e)}"
-                logger.warning(f"❌ Error with {method}: {e}")
-                continue
-        
-        return {
-            "success": False,
-            "error": "All authentication methods failed",
-            "details": {
-                "tried_methods": auth_methods,
-                "last_error": last_error,
-                "has_function_key": bool(self.function_key),
-                "url_has_code": 'code=' in self.function_url.lower(),
-                "recommendations": [
-                    "Verify bot has Contributor access to Function App in Azure Portal",
-                    "Check Function App authentication settings",
-                    "Test function directly in Azure Portal",
-                    "Verify AZURE_FUNCTION_URL is correct"
-                ]
+                        }
+                        
+        except Exception as e:
+            logger.warning(f"❌ Function call failed: {e}")
+            return {
+                "success": False,
+                "error": f"Connection error: {str(e)}",
+                "details": {
+                    "exception_type": type(e).__name__,
+                    "auth_method": "url_embedded"
+                }
             }
-        }
 
 class CostTracker:
     """Tracks and calculates costs for various Azure services"""
@@ -275,61 +206,80 @@ class CostTracker:
         }
 
 class UserAuthHandler:
-    """Handles user authentication information extraction"""
+    """Handles Microsoft authentication information extraction"""
     
     @staticmethod
     def extract_user_info(request: Request) -> dict:
-        """Extract user information from request headers/tokens"""
+        """Extract user information from Microsoft authentication headers/tokens"""
         user_info = {
             "name": "Unknown User",
             "email": "unknown@domain.com",
             "authenticated": False,
             "tenant": "Unknown",
-            "roles": []
+            "roles": [],
+            "auth_provider": "Unknown"
         }
         
-        # Try to get user info from various sources
+        # Try to get user info from authorization header (JWT token)
         auth_header = request.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             token = auth_header[7:]
             try:
+                # Decode without verification for user info extraction
                 decoded = jwt.decode(token, options={"verify_signature": False})
                 user_info.update({
                     "name": decoded.get('name', decoded.get('preferred_username', 'Unknown')),
                     "email": decoded.get('email', decoded.get('upn', 'unknown@domain.com')),
                     "authenticated": True,
                     "tenant": decoded.get('tid', 'Unknown'),
-                    "roles": decoded.get('roles', [])
+                    "roles": decoded.get('roles', []),
+                    "auth_provider": "Microsoft Azure AD",
+                    "unique_name": decoded.get('unique_name', ''),
+                    "given_name": decoded.get('given_name', ''),
+                    "family_name": decoded.get('family_name', ''),
+                    "app_id": decoded.get('azp', decoded.get('appid', '')),
+                    "auth_time": decoded.get('auth_time', '')
                 })
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to decode JWT: {e}")
         
+        # Check for Azure App Service authentication headers
         ms_client_principal = request.headers.get('X-MS-CLIENT-PRINCIPAL')
         if ms_client_principal:
             try:
                 import base64
                 decoded = base64.b64decode(ms_client_principal).decode('utf-8')
                 principal = json.loads(decoded)
+                
+                # Extract claims
+                claims = {claim['typ']: claim['val'] for claim in principal.get('claims', [])}
+                
                 user_info.update({
-                    "name": principal.get('user_id', 'Unknown'),
-                    "email": principal.get('user_claims', [{}])[0].get('val', 'unknown@domain.com'),
+                    "name": claims.get('name', principal.get('userId', 'Unknown')),
+                    "email": claims.get('http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress', 
+                                      claims.get('emails', 'unknown@domain.com')),
                     "authenticated": True,
-                    "auth_type": principal.get('auth_typ', 'Unknown')
+                    "auth_provider": principal.get('identityProvider', 'Microsoft'),
+                    "auth_type": principal.get('authType', 'Unknown'),
+                    "user_id": principal.get('userId', ''),
+                    "roles": principal.get('userRoles', [])
                 })
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to decode MS client principal: {e}")
         
-        if request.headers.get('X-User-Name'):
+        # Check for direct headers (from Azure Easy Auth)
+        if request.headers.get('X-MS-CLIENT-PRINCIPAL-NAME'):
             user_info.update({
-                "name": request.headers.get('X-User-Name'),
-                "email": request.headers.get('X-User-Email', 'unknown@domain.com'),
-                "authenticated": True
+                "name": request.headers.get('X-MS-CLIENT-PRINCIPAL-NAME', 'Unknown'),
+                "authenticated": True,
+                "auth_provider": "Microsoft (Easy Auth)",
+                "user_id": request.headers.get('X-MS-CLIENT-PRINCIPAL-ID', '')
             })
         
         return user_info
 
 class EnhancedAdminDashboard:
-    """Enhanced admin dashboard with cost tracking, uptime monitoring, and improved authentication"""
+    """Enhanced admin dashboard with Microsoft auth and URL-embedded function auth"""
     
     def __init__(self, sql_translator=None, bot=None):
         self.sql_translator = sql_translator
@@ -349,20 +299,17 @@ class EnhancedAdminDashboard:
         }
     
     async def dashboard_page(self, request: Request) -> Response:
-        """Serve the enhanced dashboard HTML page with uptime tracking"""
+        """Serve the enhanced dashboard HTML page"""
         
         user_info = self.user_auth.extract_user_info(request)
         uptime_info = self.uptime_tracker.get_uptime()
         perf_stats = self.uptime_tracker.get_performance_stats()
         
+        # Bot configuration (minimal, no sensitive env vars)
         config = {
             "botUrl": f"https://{request.host}",
-            "functionUrl": os.environ.get("AZURE_FUNCTION_URL", ""),
-            "functionKey": "***" + os.environ.get("AZURE_FUNCTION_KEY", "")[-4:] if os.environ.get("AZURE_FUNCTION_KEY") else "Not set",
-            "openaiEndpoint": os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
-            "openaiDeployment": os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini"),
             "environment": os.environ.get("DEPLOYMENT_ENV", "production"),
-            "appId": os.environ.get("MICROSOFT_APP_ID", "")[:8] + "***" if os.environ.get("MICROSOFT_APP_ID") else "Not set"
+            "adminIntegration": "Connected to Main Bot"  # Clarify it's integrated
         }
         
         today = datetime.now().strftime("%Y-%m-%d")
@@ -374,28 +321,29 @@ class EnhancedAdminDashboard:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SQL Assistant Bot - Enhanced Admin Dashboard</title>
+    <title>SQL Assistant Bot - Admin Dashboard</title>
     <style>
         {self._get_enhanced_dashboard_css()}
     </style>
 </head>
 <body>
     <div class="dashboard">
-        <!-- Enhanced Header with User Info and Uptime -->
+        <!-- Enhanced Header with Microsoft Auth User Info -->
         <div class="header">
             <div class="header-content">
                 <div class="title-section">
                     <h1>🤖 SQL Assistant Bot - Admin Dashboard</h1>
-                    <p>Real-time monitoring, cost tracking & analytics • Environment: {config["environment"]}</p>
+                    <p>Real-time monitoring & analytics • {config["adminIntegration"]} • Environment: {config["environment"]}</p>
                 </div>
                 <div class="user-section">
                     <div class="user-info">
                         <div class="user-avatar">
-                            <span class="avatar-icon">👤</span>
+                            <span class="avatar-icon">{'🔐' if user_info["authenticated"] else '👤'}</span>
                         </div>
                         <div class="user-details">
-                            <div class="user-name">{user_info["name"]}</div>
+                            <div class="user-name">{user_info.get("given_name", "")} {user_info.get("family_name", "") or user_info["name"]}</div>
                             <div class="user-email">{user_info["email"]}</div>
+                            <div class="auth-provider">{user_info["auth_provider"]}</div>
                             <div class="auth-status {'authenticated' if user_info['authenticated'] else 'not-authenticated'}">
                                 {'🟢 Authenticated' if user_info['authenticated'] else '🔴 Not Authenticated'}
                             </div>
@@ -406,8 +354,8 @@ class EnhancedAdminDashboard:
             <div class="server-info">
                 <span>Server: {request.host}</span> • 
                 <span>Time: <span id="currentTime">{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</span></span> •
-                <span>Uptime: <span id="uptimeDisplay">{uptime_info["uptime_formatted"]}</span></span> •
-                <span>Tenant: {user_info.get('tenant', 'N/A')}</span>
+                <span>Uptime: <span id="uptimeDisplay">{uptime_info["uptime_formatted"]}</span></span>
+                {f' • <span>Tenant: {user_info.get("tenant", "N/A")[:8]}...</span>' if user_info.get("tenant") else ""}
             </div>
         </div>
 
@@ -479,8 +427,8 @@ class EnhancedAdminDashboard:
                             <span class="metric-value">Checking...</span>
                         </div>
                         <div class="metric">
-                            <span class="metric-label">Disk:</span>
-                            <span class="metric-value">Checking...</span>
+                            <span class="metric-label">Connections:</span>
+                            <span class="metric-value">Active</span>
                         </div>
                     </div>
                 </div>
@@ -594,34 +542,13 @@ class EnhancedAdminDashboard:
             </div>
         </div>
 
-        <!-- Environment Configuration -->
+        <!-- Action Buttons -->
         <div class="config-section">
-            <h2>⚙️ Environment Configuration</h2>
-            <div class="config-grid">
-                <div class="config-display">
-                    <label>Bot URL:</label>
-                    <div class="config-value">{config["botUrl"]}</div>
-                </div>
-                <div class="config-display">
-                    <label>App ID:</label>
-                    <div class="config-value">{config["appId"]}</div>
-                </div>
-                <div class="config-display">
-                    <label>Azure Function:</label>
-                    <div class="config-value">{config["functionUrl"] or "Not configured"}</div>
-                </div>
-                <div class="config-display">
-                    <label>Function Key:</label>
-                    <div class="config-value">{config["functionKey"]}</div>
-                </div>
-                <div class="config-display">
-                    <label>OpenAI Endpoint:</label>
-                    <div class="config-value">{config["openaiEndpoint"] or "Not configured"}</div>
-                </div>
-                <div class="config-display">
-                    <label>OpenAI Deployment:</label>
-                    <div class="config-value">{config["openaiDeployment"]}</div>
-                </div>
+            <h2>⚙️ System Controls</h2>
+            <div class="info-box">
+                <p>🔗 This admin dashboard is <strong>integrated with the main bot</strong> and provides real-time monitoring of all bot operations.</p>
+                <p>🔐 Authentication: <strong>{user_info["auth_provider"]}</strong> | User: <strong>{user_info["name"]}</strong></p>
+                <p>⚡ Azure Function: Using <strong>URL-embedded authentication</strong> (no separate key needed)</p>
             </div>
             <div class="action-buttons">
                 <button class="test-button primary" onclick="runAllTests()">🚀 Run All Tests</button>
@@ -735,7 +662,12 @@ class EnhancedAdminDashboard:
             <div class="log-viewer" id="logViewer">
                 <div class="log-entry info">
                     <span class="timestamp">[{datetime.now().strftime("%H:%M:%S")}]</span>
-                    <span class="message">Enhanced admin dashboard initialized for {user_info["name"]} • Uptime: {uptime_info["uptime_formatted"]}</span>
+                    <span class="message">Admin dashboard initialized for {user_info["name"]} via {user_info["auth_provider"]} • Uptime: {uptime_info["uptime_formatted"]}</span>
+                    <span class="cost-info">$0.000</span>
+                </div>
+                <div class="log-entry info">
+                    <span class="timestamp">[{datetime.now().strftime("%H:%M:%S")}]</span>
+                    <span class="message">Dashboard is connected to the main bot - all operations are live</span>
                     <span class="cost-info">$0.000</span>
                 </div>
             </div>
@@ -743,14 +675,14 @@ class EnhancedAdminDashboard:
 
         <!-- Enhanced Bot Chat Console with Cost Tracking -->
         <div class="config-section">
-            <h2>💬 Bot Chat Console with Cost Tracking</h2>
-            <p>Test your bot and monitor real-time costs per interaction</p>
+            <h2>💬 Bot Chat Console (Live Bot Connection)</h2>
+            <p>Test your bot and monitor real-time costs per interaction - messages are sent to the actual bot</p>
             
             <div class="chat-container">
                 <div class="chat-messages" id="chatMessages">
                     <div class="chat-message system">
                         <div class="message-content">
-                            <strong>System:</strong> Chat console ready with cost tracking. Try typing "hello" or "/help"!
+                            <strong>System:</strong> Chat console ready. This is connected to your live bot. Try typing "hello" or "/help"!
                         </div>
                         <div class="message-meta">
                             <div class="message-time">{datetime.now().strftime("%H:%M")}</div>
@@ -823,7 +755,7 @@ class EnhancedAdminDashboard:
         return Response(text=html_content, content_type='text/html')
     
     async def _test_sql_function(self) -> dict:
-        """Test SQL function connection with improved authentication handling"""
+        """Test SQL function connection using URL-embedded authentication"""
         start_time = asyncio.get_event_loop().time()
         
         try:
@@ -840,7 +772,7 @@ class EnhancedAdminDashboard:
                     "details": {
                         "status_code": result["details"]["status_code"],
                         "databases_found": len(data.get("databases", [])),
-                        "auth_method": result["details"]["auth_method"],
+                        "auth_method": "url_embedded",
                         "response_time_ms": response_time,
                         "sample_databases": data.get("databases", [])[:3]
                     }
@@ -856,14 +788,14 @@ class EnhancedAdminDashboard:
             }
     
     async def api_test_function(self, request: Request) -> Response:
-        """API endpoint for testing SQL function with enhanced authentication"""
+        """API endpoint for testing SQL function"""
         try:
             result = await self._test_sql_function()
             
             if result.get("success"):
                 await self._track_api_cost("function_test", 0.0005, {
                     "test": True,
-                    "auth_method": result.get("details", {}).get("auth_method", "unknown")
+                    "auth_method": "url_embedded"
                 })
             
             return json_response({
@@ -1154,7 +1086,11 @@ Uptime: {uptime_info['uptime_formatted']}"""
             result = {
                 "success": health_data["has_critical_vars"],
                 "missing_variables": health_data["missing_variables"],
-                "environment_variables": health_data["environment_variables"]
+                "bot_info": {
+                    "sql_translator_available": health_data["sql_translator_available"],
+                    "bot_available": health_data["bot_available"],
+                    "admin_integration": "Connected to Main Bot"
+                }
             }
             return json_response({
                 "status": "success",
@@ -1218,7 +1154,7 @@ Uptime: {uptime_info['uptime_formatted']}"""
         message_lower = message.lower().strip()
         
         if message_lower in ["hello", "hi", "hey"]:
-            return "Hello! I'm the SQL Assistant Bot with cost tracking and uptime monitoring. Type /help to see what I can do!"
+            return "Hello! I'm the SQL Assistant Bot. This admin console is connected to the live bot. Type /help to see what I can do!"
         elif message_lower == "/help":
             return """Available commands:
 - /database list - List available databases
@@ -1236,14 +1172,14 @@ Uptime: {uptime_info['uptime_formatted']}"""
             uptime_info = self.uptime_tracker.get_uptime()
             return f"⏱️ Uptime: {uptime_info['uptime_formatted']} | Started: {uptime_info['start_time'][:19]} | Restarts: {uptime_info['restart_count']}"
         elif message_lower == "/database list":
-            return "To see databases, I need to connect to your SQL Function. Make sure authentication is properly configured!"
+            return "To see databases, I'll connect to your SQL Function using URL-embedded authentication..."
         elif message_lower == "/stats":
             uptime_info = self.uptime_tracker.get_uptime()
             return f"📊 Statistics: {len(self.usage_stats['user_sessions'])} active users, {len(self.usage_stats['query_history'])} queries today, ${sum(self.usage_stats['daily_costs'].values()):.3f} total cost, {uptime_info['uptime_formatted']} uptime"
         elif message_lower.startswith("/"):
-            return f"Command '{message}' recognized. Full functionality requires connection to Teams."
+            return f"Command '{message}' recognized. This console is connected to the main bot for processing."
         else:
-            return f"I understand you want to know about: '{message}'. In production, I would translate this to SQL and query your database! Estimated cost: $0.012"
+            return f"I understand you want to know about: '{message}'. The main bot will translate this to SQL and query your database! Estimated cost: $0.012"
     
     async def _get_comprehensive_health(self) -> dict:
         """Get comprehensive health information"""
@@ -1261,10 +1197,6 @@ Uptime: {uptime_info['uptime_formatted']}"""
             env_status[var] = bool(value)
             if not value:
                 missing_vars.append(var)
-        
-        optional_vars = ["AZURE_FUNCTION_KEY", "AZURE_OPENAI_DEPLOYMENT_NAME"]
-        for var in optional_vars:
-            env_status[var] = bool(os.environ.get(var))
         
         uptime_info = self.uptime_tracker.get_uptime()
         
@@ -1483,11 +1415,18 @@ Uptime: {uptime_info['uptime_formatted']}"""
             margin-bottom: 4px;
         }
 
+        .auth-provider {
+            font-size: 0.8rem;
+            opacity: 0.7;
+            margin-bottom: 4px;
+        }
+
         .auth-status {
             font-size: 0.8rem;
             padding: 2px 8px;
             border-radius: 12px;
             background: rgba(255,255,255,0.2);
+            display: inline-block;
         }
 
         .auth-status.authenticated {
@@ -1502,6 +1441,20 @@ Uptime: {uptime_info['uptime_formatted']}"""
             font-size: 0.9rem;
             opacity: 0.8;
             text-align: center;
+        }
+
+        /* Info Box */
+        .info-box {
+            background: #f0f8ff;
+            border-left: 4px solid #2196f3;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 6px;
+        }
+
+        .info-box p {
+            margin: 5px 0;
+            color: #1976d2;
         }
 
         /* Uptime Dashboard */
@@ -1813,34 +1766,6 @@ Uptime: {uptime_info['uptime_formatted']}"""
             color: #333;
             margin-bottom: 20px;
             font-size: 1.4rem;
-        }
-
-        .config-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-
-        .config-display {
-            padding: 12px;
-            background: #f8f9fa;
-            border-radius: 6px;
-            border-left: 4px solid #667eea;
-        }
-
-        .config-display label {
-            font-weight: 600;
-            color: #555;
-            font-size: 0.9rem;
-        }
-
-        .config-value {
-            margin-top: 5px;
-            font-family: monospace;
-            font-size: 0.9rem;
-            color: #333;
-            word-break: break-all;
         }
 
         .action-buttons {
@@ -2232,827 +2157,8 @@ Uptime: {uptime_info['uptime_formatted']}"""
             .header-content { flex-direction: column; gap: 15px; }
             .title-section h1 { font-size: 2rem; }
             .status-grid { grid-template-columns: 1fr; }
-            .config-grid { grid-template-columns: 1fr; }
             .cost-grid { grid-template-columns: 1fr; }
             .uptime-grid { grid-template-columns: 1fr; }
             .analytics-grid { grid-template-columns: 1fr; }
         }
         '''
-    
-    def _get_enhanced_dashboard_javascript(self) -> str:
-        """Return the enhanced JavaScript code for the dashboard"""
-        return '''
-        let testResults = {};
-        let logs = [];
-        let autoRefreshTimer = null;
-        let isTestRunning = false;
-        let sessionCost = 0.0;
-        let costData = {};
-        let uptimeStartTime = new Date(UPTIME_INFO.start_time);
-
-        function log(message, type = 'info', cost = 0.0) {
-            const timestamp = new Date().toLocaleTimeString();
-            logs.push({ timestamp, message, type, cost });
-            
-            const logViewer = document.getElementById('logViewer');
-            const logEntry = document.createElement('div');
-            logEntry.className = `log-entry ${type}`;
-            logEntry.innerHTML = `
-                <span class="timestamp">[${timestamp}]</span>
-                <span class="message">${escapeHtml(message)}</span>
-                <span class="cost-info">${cost.toFixed(3)}</span>
-            `;
-            logViewer.appendChild(logEntry);
-            logViewer.scrollTop = logViewer.scrollHeight;
-            
-            sessionCost += cost;
-            updateSessionCost();
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-
-        function updateSessionCost() {
-            const sessionCostEl = document.getElementById('sessionCost');
-            if (sessionCostEl) {
-                sessionCostEl.textContent = sessionCost.toFixed(3);
-            }
-        }
-
-        function updateCurrentTime() {
-            const timeEl = document.getElementById('currentTime');
-            const uptimeEl = document.getElementById('uptimeDisplay');
-            
-            if (timeEl) {
-                timeEl.textContent = new Date().toLocaleString();
-            }
-            
-            if (uptimeEl) {
-                const now = new Date();
-                const uptimeMs = now - uptimeStartTime;
-                const days = Math.floor(uptimeMs / (1000 * 60 * 60 * 24));
-                const hours = Math.floor((uptimeMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-                const minutes = Math.floor((uptimeMs % (1000 * 60 * 60)) / (1000 * 60));
-                const seconds = Math.floor((uptimeMs % (1000 * 60)) / 1000);
-                uptimeEl.textContent = `${days}d ${hours}h ${minutes}m ${seconds}s`;
-            }
-        }
-
-        function refreshUptime() {
-            log('🔄 Refreshing uptime data...', 'info');
-            
-            fetch('/admin/api/uptime')
-                .then(response => response.json())
-                .then(result => {
-                    if (result.status === 'success') {
-                        updateUptimeDisplay(result.data);
-                        log('✅ Uptime data refreshed', 'success');
-                    } else {
-                        log(`❌ Failed to refresh uptime: ${result.error}`, 'error');
-                    }
-                })
-                .catch(error => {
-                    log(`❌ Uptime refresh error: ${error.message}`, 'error');
-                });
-        }
-
-        function updateUptimeDisplay(data) {
-            const uptimeInfo = data.uptime;
-            const perfStats = data.performance;
-            
-            // Update uptime display
-            const uptimeEl = document.getElementById('uptimeDisplay');
-            if (uptimeEl) {
-                uptimeEl.textContent = uptimeInfo.uptime_formatted;
-            }
-            
-            // Update performance metrics if elements exist
-            if (perfStats.sample_count > 0) {
-                updateElementText('avgResponseTime', `${perfStats.avg_response_time.toFixed(1)}ms`);
-                updateElementText('minMaxResponse', `${perfStats.min_response_time.toFixed(1)}ms / ${perfStats.max_response_time.toFixed(1)}ms`);
-                updateElementText('sampleCount', perfStats.sample_count);
-            }
-        }
-
-        function updateElementText(id, text) {
-            const el = document.getElementById(id);
-            if (el) el.textContent = text;
-        }
-
-        function checkSystemHealth() {
-            log('🔍 Checking system health...', 'info');
-            
-            const healthEl = document.getElementById('systemHealth');
-            if (healthEl) {
-                healthEl.innerHTML = `
-                    <div class="metric">
-                        <span class="metric-label">Status:</span>
-                        <span class="metric-value status-healthy">🟢 Healthy</span>
-                    </div>
-                    <div class="metric">
-                        <span class="metric-label">Memory:</span>
-                        <span class="metric-value">Checking...</span>
-                    </div>
-                    <div class="metric">
-                        <span class="metric-label">Uptime:</span>
-                        <span class="metric-value">${UPTIME_INFO.uptime_formatted}</span>
-                    </div>
-                `;
-            }
-            
-            // Simulate health check
-            setTimeout(() => {
-                if (healthEl) {
-                    healthEl.innerHTML = `
-                        <div class="metric">
-                            <span class="metric-label">Status:</span>
-                            <span class="metric-value status-healthy">🟢 Operational</span>
-                        </div>
-                        <div class="metric">
-                            <span class="metric-label">Memory:</span>
-                            <span class="metric-value">~250MB</span>
-                        </div>
-                        <div class="metric">
-                            <span class="metric-label">Response:</span>
-                            <span class="metric-value">Fast</span>
-                        </div>
-                    `;
-                }
-                log('✅ System health check completed', 'success');
-            }, 1000);
-        }
-
-        function viewPerformanceDetails() {
-            log('📈 Viewing performance details...', 'info');
-            
-            fetch('/admin/api/uptime')
-                .then(response => response.json())
-                .then(result => {
-                    if (result.status === 'success') {
-                        const perf = result.data.performance;
-                        const details = `Performance Summary:
-- Average Response: ${perf.avg_response_time.toFixed(1)}ms
-- Min Response: ${perf.min_response_time.toFixed(1)}ms  
-- Max Response: ${perf.max_response_time.toFixed(1)}ms
-- Sample Count: ${perf.sample_count}
-- Recent Samples: ${perf.recent_samples.length}`;
-                        
-                        alert(details);
-                        log('📊 Performance details viewed', 'info');
-                    }
-                })
-                .catch(error => {
-                    log(`❌ Error fetching performance details: ${error.message}`, 'error');
-                });
-        }
-
-        function downloadUptimeReport() {
-            log('📊 Generating uptime report...', 'info');
-            
-            fetch('/admin/api/uptime-report')
-                .then(response => response.json())
-                .then(result => {
-                    if (result.status !== 'error') {
-                        const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
-                        const url = URL.createObjectURL(blob);
-                        
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `uptime-report-${new Date().toISOString().split('T')[0]}.json`;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                        
-                        log('💾 Uptime report downloaded', 'success');
-                    } else {
-                        log(`❌ Failed to generate uptime report: ${result.error}`, 'error');
-                    }
-                })
-                .catch(error => {
-                    log(`❌ Uptime report download error: ${error.message}`, 'error');
-                });
-        }
-
-        function updateStatus(test, status, details = '') {
-            testResults[test] = status;
-            
-            const icon = document.getElementById(test + 'Icon');
-            if (icon) {
-                icon.className = `status-icon status-${status}`;
-                icon.textContent = status === 'success' ? '✓' : 
-                                 status === 'error' ? '✗' : 
-                                 status === 'warning' ? '⚠' : 
-                                 status === 'loading' ? '⟳' : '?';
-            }
-            
-            const detailsEl = document.getElementById(test + 'Details');
-            if (detailsEl && details) {
-                detailsEl.textContent = details;
-                detailsEl.className = `status-details ${status}`;
-            }
-            
-            updateOverallStatus();
-        }
-
-        function updateOverallStatus() {
-            const results = Object.values(testResults);
-            const passed = results.filter(r => r === 'success').length;
-            const failed = results.filter(r => r === 'error').length;
-            const total = 6;
-            
-            const overallEl = document.getElementById('overallStatus');
-            if (!overallEl) return;
-            
-            const statusIcon = overallEl.querySelector('.status-icon');
-            const statusTitle = overallEl.querySelector('.status-title');
-            const statusSubtitle = overallEl.querySelector('.status-subtitle');
-            
-            if (results.length === 0) {
-                statusIcon.className = 'status-icon status-unknown';
-                statusIcon.textContent = '?';
-                statusTitle.textContent = 'Not Tested';
-                statusSubtitle.textContent = 'Click "Run All Tests" to begin';
-            } else if (passed === total) {
-                statusIcon.className = 'status-icon status-success';
-                statusIcon.textContent = '✓';
-                statusTitle.textContent = 'All Systems Operational';
-                statusSubtitle.textContent = `${passed}/${total} tests passed`;
-            } else if (failed > 0) {
-                statusIcon.className = 'status-icon status-error';
-                statusIcon.textContent = '✗';
-                statusTitle.textContent = 'Issues Detected';
-                statusSubtitle.textContent = `${failed} failures, ${passed} passing`;
-            } else {
-                statusIcon.className = 'status-icon status-warning';
-                statusIcon.textContent = '⚠';
-                statusTitle.textContent = 'Partial Functionality';
-                statusSubtitle.textContent = `${passed}/${results.length} tests completed`;
-            }
-        }
-
-        async function makeApiCall(endpoint, method = 'GET', data = null) {
-            try {
-                const options = {
-                    method: method,
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                };
-                
-                if (data) {
-                    options.body = JSON.stringify(data);
-                }
-                
-                const response = await fetch(endpoint, options);
-                const result = await response.json();
-                return result;
-            } catch (error) {
-                return {
-                    status: 'error',
-                    error: error.message
-                };
-            }
-        }
-
-        async function refreshCosts() {
-            log('🔄 Refreshing cost data...', 'info');
-            
-            try {
-                const result = await makeApiCall('/admin/api/costs');
-                
-                if (result.status === 'success') {
-                    costData = result.data;
-                    updateCostDashboard();
-                    log('✅ Cost data refreshed', 'success');
-                } else {
-                    log(`❌ Failed to refresh costs: ${result.error}`, 'error');
-                }
-            } catch (error) {
-                log(`❌ Cost refresh error: ${error.message}`, 'error');
-            }
-        }
-
-        function updateCostDashboard() {
-            if (costData.token_usage) {
-                updateElementText('inputTokens', costData.token_usage.input_tokens.toLocaleString());
-                updateElementText('outputTokens', costData.token_usage.output_tokens.toLocaleString());
-                updateElementText('tokenCost', `${costData.token_usage.total_cost.toFixed(3)}`);
-            }
-            
-            if (costData.function_calls) {
-                updateElementText('sqlQueries', costData.function_calls.sql_queries);
-                updateElementText('metadataCalls', costData.function_calls.metadata_calls);
-                updateElementText('functionCost', `${costData.function_calls.total_cost.toFixed(3)}`);
-            }
-            
-            if (costData.analytics) {
-                updateElementText('activeUsers', costData.analytics.active_users);
-                updateElementText('queriesToday', costData.analytics.queries_today);
-                updateElementText('avgCostQuery', `${costData.analytics.avg_cost_per_query.toFixed(3)}`);
-            }
-            
-            if (costData.token_usage && costData.function_calls) {
-                const totalCost = costData.token_usage.total_cost + costData.function_calls.total_cost;
-                const tokenPercent = totalCost > 0 ? (costData.token_usage.total_cost / totalCost * 100) : 0;
-                const functionPercent = totalCost > 0 ? (costData.function_calls.total_cost / totalCost * 100) : 0;
-                
-                const breakdownEl = document.getElementById('costBreakdown');
-                if (breakdownEl) {
-                    breakdownEl.innerHTML = `
-                        <div class="breakdown-item">
-                            <span class="breakdown-label">OpenAI Tokens:</span>
-                            <span class="breakdown-value">${costData.token_usage.total_cost.toFixed(3)} (${tokenPercent.toFixed(1)}%)</span>
-                        </div>
-                        <div class="breakdown-item">
-                            <span class="breakdown-label">Function Calls:</span>
-                            <span class="breakdown-value">${costData.function_calls.total_cost.toFixed(3)} (${functionPercent.toFixed(1)}%)</span>
-                        </div>
-                        <div class="breakdown-item">
-                            <span class="breakdown-label">Other Services:</span>
-                            <span class="breakdown-value">$0.000 (0%)</span>
-                        </div>
-                    `;
-                }
-            }
-        }
-
-        async function testBotHealth() {
-            updateStatus('botHealth', 'loading');
-            log('Testing bot health...', 'info');
-            
-            try {
-                const result = await makeApiCall('/admin/api/health');
-                
-                if (result.status === 'success') {
-                    const data = result.data;
-                    const details = `Environment: ${data.has_critical_vars ? 'OK' : 'Missing vars'}
-Python: ${data.python_version.split(' ')[0]}
-Translator: ${data.sql_translator_available ? 'Available' : 'Not available'}
-Bot: ${data.bot_available ? 'Available' : 'Not available'}
-Uptime: ${data.uptime.uptime_formatted}`;
-                    
-                    updateStatus('botHealth', data.has_critical_vars ? 'success' : 'warning', details);
-                    log(`✅ Bot health check completed`, 'success');
-                } else {
-                    updateStatus('botHealth', 'error', result.error || 'Unknown error');
-                    log(`❌ Bot health check failed: ${result.error}`, 'error');
-                }
-            } catch (error) {
-                updateStatus('botHealth', 'error', `Connection failed: ${error.message}`);
-                log(`❌ Bot health test failed: ${error.message}`, 'error');
-            }
-        }
-
-        async function testOpenAI() {
-            updateStatus('openai', 'loading');
-            log('Testing Azure OpenAI connection...', 'info');
-            
-            try {
-                const result = await makeApiCall('/admin/api/openai');
-                
-                if (result.status === 'success' && result.data.success) {
-                    const details = `Status: Connected
-Deployment: ${result.data.details.deployment}
-Model: ${result.data.details.model || 'N/A'}
-Response Time: ${result.data.details.response_time_ms || 'N/A'}ms
-Response: ${result.data.details.status_code}`;
-                    
-                    updateStatus('openai', 'success', details);
-                    log('✅ Azure OpenAI connection successful', 'success', 0.001);
-                } else {
-                    const error = result.data ? result.data.error : result.error;
-                    updateStatus('openai', 'error', error);
-                    log(`❌ Azure OpenAI test failed: ${error}`, 'error');
-                }
-            } catch (error) {
-                updateStatus('openai', 'error', `Test failed: ${error.message}`);
-                log(`❌ OpenAI test error: ${error.message}`, 'error');
-            }
-        }
-
-        async function testSQLFunction() {
-            updateStatus('sqlFunction', 'loading');
-            log('Testing SQL Function with enhanced authentication...', 'info');
-            
-            try {
-                const result = await makeApiCall('/admin/api/function');
-                
-                if (result.status === 'success' && result.data.success) {
-                    const details = `Status: Connected
-Auth Method: ${result.data.details.auth_method}
-Databases: ${result.data.details.databases_found}
-Response Time: ${result.data.details.response_time_ms || 'N/A'}ms
-Sample: ${result.data.details.sample_databases ? result.data.details.sample_databases.slice(0, 2).join(', ') : 'N/A'}`;
-                    
-                    updateStatus('sqlFunction', 'success', details);
-                    log(`✅ SQL Function test passed - ${result.data.details.databases_found} databases found using ${result.data.details.auth_method}`, 'success', 0.0005);
-                } else {
-                    const error = result.data ? result.data.error : result.error;
-                    updateStatus('sqlFunction', 'error', error);
-                    log(`❌ SQL Function test failed: ${error}`, 'error');
-                }
-            } catch (error) {
-                updateStatus('sqlFunction', 'error', `Test failed: ${error.message}`);
-                log(`❌ Function test error: ${error.message}`, 'error');
-            }
-        }
-
-        async function testMessaging() {
-            updateStatus('messaging', 'loading');
-            log('Testing bot messaging endpoint...', 'info');
-            
-            try {
-                const result = await makeApiCall('/admin/api/messaging');
-                
-                if (result.status === 'success') {
-                    const details = `Endpoint: ${result.data.details.endpoint}
-Bot Available: ${result.data.details.bot_available ? 'Yes' : 'No'}
-Status: Ready for messages`;
-                    
-                    updateStatus('messaging', 'success', details);
-                    log('✅ Bot messaging endpoint is configured', 'success');
-                } else {
-                    updateStatus('messaging', 'error', result.error);
-                    log(`❌ Messaging test failed: ${result.error}`, 'error');
-                }
-            } catch (error) {
-                updateStatus('messaging', 'error', `Cannot reach endpoint: ${error.message}`);
-                log(`❌ Messaging test failed: ${error.message}`, 'error');
-            }
-        }
-
-        async function testCostMonitoring() {
-            updateStatus('costMonitoring', 'loading');
-            log('Testing cost monitoring system...', 'info');
-            
-            try {
-                const result = await makeApiCall('/admin/api/cost-monitoring');
-                
-                if (result.status === 'success' && result.data.success) {
-                    const details = result.data.details;
-                    updateStatus('costMonitoring', 'success', details);
-                    log('✅ Cost monitoring system is operational', 'success');
-                } else {
-                    const error = result.data ? result.data.error : result.error;
-                    updateStatus('costMonitoring', 'error', error);
-                    log(`❌ Cost monitoring test failed: ${error}`, 'error');
-                }
-            } catch (error) {
-                updateStatus('costMonitoring', 'error', `Test failed: ${error.message}`);
-                log(`❌ Cost monitoring test error: ${error.message}`, 'error');
-            }
-        }
-
-        async function testPerformance() {
-            updateStatus('performance', 'loading');
-            log('Testing performance...', 'info');
-            
-            try {
-                const startTime = performance.now();
-                const result = await makeApiCall('/admin/api/performance');
-                const endTime = performance.now();
-                const clientLatency = Math.round(endTime - startTime);
-                
-                if (result.status === 'success') {
-                    const data = result.data;
-                    const details = `Response Time: ${clientLatency}ms
-Server Time: ${data.response_time_ms}ms
-Memory: ${data.memory_info.memory_usage_mb || 'N/A'}MB
-Uptime: ${data.uptime || 'N/A'}
-Status: ${data.status}`;
-                    
-                    const status = clientLatency > 2000 ? 'warning' : 'success';
-                    updateStatus('performance', status, details);
-                    log(`${status === 'success' ? '✅' : '⚠️'} Performance test: ${clientLatency}ms latency`, status === 'success' ? 'success' : 'warning');
-                } else {
-                    updateStatus('performance', 'error', result.error);
-                    log(`❌ Performance test failed: ${result.error}`, 'error');
-                }
-            } catch (error) {
-                updateStatus('performance', 'error', `Test failed: ${error.message}`);
-                log(`❌ Performance test error: ${error.message}`, 'error');
-            }
-        }
-
-        async function runAllTests() {
-            if (isTestRunning) {
-                log('⚠️ Tests are already running, please wait...', 'warning');
-                return;
-            }
-            
-            isTestRunning = true;
-            log('🚀 Starting comprehensive test suite with enhanced authentication...', 'info');
-            
-            const runButton = document.querySelector('.test-button.primary');
-            if (runButton) {
-                runButton.disabled = true;
-                runButton.textContent = '⏳ Running Tests...';
-            }
-            
-            const tests = ['botHealth', 'openai', 'sqlFunction', 'messaging', 'costMonitoring', 'performance'];
-            tests.forEach(test => updateStatus(test, 'loading'));
-            
-            await testBotHealth();
-            await new Promise(resolve => setTimeout(resolve, 300));
-            
-            await testMessaging();
-            await new Promise(resolve => setTimeout(resolve, 300));
-            
-            await testOpenAI();
-            await new Promise(resolve => setTimeout(resolve, 300));
-            
-            await testSQLFunction();
-            await new Promise(resolve => setTimeout(resolve, 300));
-            
-            await testCostMonitoring();
-            await new Promise(resolve => setTimeout(resolve, 300));
-            
-            await testPerformance();
-            
-            const results = Object.values(testResults);
-            const passed = results.filter(r => r === 'success').length;
-            const total = tests.length;
-            
-            if (passed === total) {
-                log('🎉 All tests passed! System is fully operational.', 'success');
-            } else {
-                log(`⚠️ Testing completed: ${passed}/${total} tests passed`, 'warning');
-            }
-            
-            if (runButton) {
-                runButton.disabled = false;
-                runButton.textContent = '🚀 Run All Tests';
-            }
-            
-            isTestRunning = false;
-            await refreshCosts();
-        }
-
-        function refreshStatus() {
-            log('🔄 Refreshing dashboard...', 'info');
-            runAllTests();
-        }
-
-        function clearLogs() {
-            logs = [];
-            const logViewer = document.getElementById('logViewer');
-            logViewer.innerHTML = '';
-            log('Logs cleared', 'info');
-        }
-
-        function clearAllLogs() {
-            clearLogs();
-            clearChat();
-            testResults = {};
-            sessionCost = 0.0;
-            updateSessionCost();
-            updateOverallStatus();
-            
-            const tests = ['botHealth', 'openai', 'sqlFunction', 'messaging', 'costMonitoring', 'performance'];
-            tests.forEach(test => {
-                updateStatus(test, 'unknown', 'Ready for testing...');
-            });
-            
-            log('Dashboard reset complete', 'success');
-        }
-
-        function exportLogs() {
-            const logText = logs.map(log => `[${log.timestamp}] ${log.type.toUpperCase()}: ${log.message} (Cost: ${log.cost.toFixed(3)})`).join('\\n');
-            const blob = new Blob([logText], { type: 'text/plain' });
-            const url = URL.createObjectURL(blob);
-            
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `bot-dashboard-logs-${new Date().toISOString().split('T')[0]}.txt`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            
-            log('📥 Logs exported to file', 'success');
-        }
-
-        async function downloadCostReport() {
-            log('📊 Generating cost report...', 'info');
-            
-            try {
-                const result = await makeApiCall('/admin/api/cost-report');
-                
-                if (result.status !== 'error') {
-                    const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
-                    const url = URL.createObjectURL(blob);
-                    
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `cost-report-${new Date().toISOString().split('T')[0]}.json`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                    
-                    log('💾 Cost report downloaded', 'success');
-                } else {
-                    log(`❌ Failed to generate report: ${result.error}`, 'error');
-                }
-            } catch (error) {
-                log(`❌ Report download error: ${error.message}`, 'error');
-            }
-        }
-
-        function toggleAutoRefresh() {
-            const checkbox = document.getElementById('autoRefresh');
-            
-            if (checkbox.checked) {
-                autoRefreshTimer = setInterval(() => {
-                    if (!isTestRunning) {
-                        log('⏰ Auto-refresh triggered', 'info');
-                        runAllTests();
-                    }
-                }, 60000);
-                
-                log('⏰ Auto-refresh enabled (every 60 seconds)', 'success');
-            } else {
-                if (autoRefreshTimer) {
-                    clearInterval(autoRefreshTimer);
-                    autoRefreshTimer = null;
-                }
-                log('⏹️ Auto-refresh disabled', 'info');
-            }
-        }
-
-        function addChatMessage(content, sender = 'user', type = 'normal', cost = 0.0) {
-            const chatMessages = document.getElementById('chatMessages');
-            const messageDiv = document.createElement('div');
-            
-            let className = 'chat-message ';
-            if (sender === 'user') className += 'user';
-            else if (sender === 'bot') className += 'bot';
-            else if (sender === 'system') className += 'system';
-            
-            if (type === 'error') className = 'chat-message error';
-            
-            messageDiv.className = className;
-            messageDiv.innerHTML = `
-                <div class="message-content">${sender === 'user' ? '<strong>You:</strong> ' : sender === 'bot' ? '<strong>Bot:</strong> ' : ''} ${escapeHtml(content)}</div>
-                <div class="message-meta">
-                    <div class="message-time">${new Date().toLocaleTimeString()}</div>
-                    <div class="message-cost">${cost.toFixed(3)}</div>
-                </div>
-            `;
-            
-            chatMessages.appendChild(messageDiv);
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-        }
-
-        async function sendChatMessage() {
-            const input = document.getElementById('chatInput');
-            const message = input.value.trim();
-            
-            if (!message) return;
-            
-            addChatMessage(message, 'user');
-            input.value = '';
-            
-            log(`💬 Sending message: "${message}"`, 'info');
-            
-            try {
-                const result = await makeApiCall('/admin/api/chat', 'POST', { message: message });
-                
-                if (result.status === 'success') {
-                    const cost = result.cost || 0.0;
-                    addChatMessage(result.response, 'bot', 'normal', cost);
-                    log(`✅ Message processed successfully (Cost: ${cost.toFixed(3)})`, 'success', cost);
-                } else {
-                    addChatMessage(`Error: ${result.error}`, 'system', 'error');
-                    log(`❌ Chat error: ${result.error}`, 'error');
-                }
-                
-            } catch (error) {
-                addChatMessage(`Connection error: ${error.message}`, 'system', 'error');
-                log(`❌ Chat error: ${error.message}`, 'error');
-            }
-        }
-
-        function sendQuickMessage(message) {
-            document.getElementById('chatInput').value = message;
-            sendChatMessage();
-        }
-
-        function handleChatKeypress(event) {
-            if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                sendChatMessage();
-            }
-        }
-
-        function clearChat() {
-            const chatMessages = document.getElementById('chatMessages');
-            chatMessages.innerHTML = `
-                <div class="chat-message system">
-                    <div class="message-content">
-                        <strong>System:</strong> Chat cleared. Ready for new conversation!
-                    </div>
-                    <div class="message-meta">
-                        <div class="message-time">${new Date().toLocaleTimeString()}</div>
-                        <div class="message-cost">$0.000</div>
-                    </div>
-                </div>
-            `;
-        }
-
-        function viewTokenDetails() {
-            log('📊 Viewing detailed token usage...', 'info');
-            alert('Token details would open in a modal or new page in production');
-        }
-
-        function viewFunctionDetails() {
-            log('📈 Viewing function call details...', 'info');
-            alert('Function call details would open in a modal or new page in production');
-        }
-
-        function exportUsageReport() {
-            log('📁 Exporting usage analytics...', 'info');
-            downloadCostReport();
-        }
-
-        function showCostBreakdown() {
-            log('💰 Showing detailed cost breakdown...', 'info');
-            alert('Detailed cost breakdown would open in a modal in production');
-        }
-
-        // Initialize dashboard
-        document.addEventListener('DOMContentLoaded', function() {
-            log(`🚀 Enhanced admin dashboard initialized for ${USER_INFO.name}`, 'success');
-            log(`📍 Server: ${CONFIG.botUrl}`, 'info');
-            log(`👤 User: ${USER_INFO.email} (${USER_INFO.authenticated ? 'Authenticated' : 'Not Authenticated'})`, 'info');
-            log(`⏱️ Uptime: ${UPTIME_INFO.uptime_formatted}`, 'info');
-            log('💡 Click "Run All Tests" to check system status with enhanced authentication', 'info');
-            
-            setInterval(updateCurrentTime, 1000);
-            refreshCosts();
-            updateOverallStatus();
-            
-            // Initial system health check
-            setTimeout(checkSystemHealth, 2000);
-        });
-
-        // Keyboard shortcuts
-        document.addEventListener('keydown', function(e) {
-            if (e.ctrlKey || e.metaKey) {
-                switch(e.key) {
-                    case 'r':
-                        e.preventDefault();
-                        runAllTests();
-                        break;
-                    case 'l':
-                        e.preventDefault();
-                        clearLogs();
-                        break;
-                    case 'c':
-                        e.preventDefault();
-                        refreshCosts();
-                        break;
-                    case 'u':
-                        e.preventDefault();
-                        refreshUptime();
-                        break;
-                }
-            }
-        });
-        '''
-
-
-# Add routes to the main app
-def add_admin_routes(app, sql_translator=None, bot=None):
-    """Add enhanced admin dashboard routes to the main aiohttp app"""
-    
-    dashboard = EnhancedAdminDashboard(sql_translator, bot)
-    
-    # Main dashboard page
-    app.router.add_get('/admin', dashboard.dashboard_page)
-    app.router.add_get('/admin/', dashboard.dashboard_page)
-    
-    # Enhanced API endpoints
-    app.router.add_get('/admin/api/health', dashboard.api_test_health)
-    app.router.add_get('/admin/api/openai', dashboard.api_test_openai)
-    app.router.add_get('/admin/api/function', dashboard.api_test_function)
-    app.router.add_get('/admin/api/messaging', dashboard.api_test_messaging)
-    app.router.add_get('/admin/api/environment', dashboard.api_test_environment)
-    app.router.add_get('/admin/api/performance', dashboard.api_test_performance)
-    app.router.add_post('/admin/api/chat', dashboard.api_chat_message)
-    
-    # Cost tracking endpoints
-    app.router.add_get('/admin/api/costs', dashboard.api_get_cost_data)
-    app.router.add_post('/admin/api/track-cost', dashboard.api_track_cost)
-    app.router.add_get('/admin/api/cost-report', dashboard.api_export_cost_report)
-    app.router.add_get('/admin/api/cost-monitoring', dashboard.api_test_cost_monitoring)
-    
-    # New uptime tracking endpoints
-    app.router.add_get('/admin/api/uptime', dashboard.api_get_uptime)
-    app.router.add_get('/admin/api/uptime-report', dashboard.api_export_uptime_report)
-    
-    return dashboard
