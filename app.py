@@ -331,10 +331,12 @@ async def admin_info(req: Request) -> Response:
             "features": [
                 "Real-time system monitoring",
                 "Component health testing", 
-                "Environment configuration display",
+                "Service status display (no env vars)",
+                "Microsoft authentication support",
                 "Performance metrics",
                 "Live activity logs",
-                "Automated testing suite"
+                "Automated testing suite",
+                "SQL function console with database listing"
             ]
         })
     else:

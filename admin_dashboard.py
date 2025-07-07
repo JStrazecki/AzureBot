@@ -1,14 +1,15 @@
-# admin_dashboard.py - Enhanced admin dashboard with uptime tracking and improved authentication
+# admin_dashboard.py - Updated admin dashboard with fixed authentication and no env display
 """
-Enhanced Admin Dashboard Route Handler for SQL Assistant Bot
+Updated Admin Dashboard Route Handler for SQL Assistant Bot
 Features:
-- Real-time cost tracking (Azure OpenAI tokens, function calls)
-- User authentication display
+- Fixed user authentication display for Microsoft auth
+- Removed environment variables display
+- Fixed SQL function connectivity for console
+- Real-time cost tracking
 - Comprehensive system monitoring
 - Usage analytics and billing insights
 - Performance metrics
 - Uptime tracking
-- Improved Azure Function authentication
 """
 
 import os
@@ -22,6 +23,7 @@ import jwt
 from typing import Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs
 import logging
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +114,6 @@ class AzureFunctionAuth:
         if 'code=' in self.function_url.lower():
             methods.append("url_embedded")
         
-        # Managed Identity (if bot has access)
-        methods.append("managed_identity")
-        
         # Function key in header
         if self.function_key:
             methods.append("header_key")
@@ -122,6 +121,9 @@ class AzureFunctionAuth:
         # Function key in URL
         if self.function_key:
             methods.append("url_key")
+        
+        # Managed Identity (if bot has access)
+        methods.append("managed_identity")
         
         return methods
     
@@ -215,13 +217,7 @@ class AzureFunctionAuth:
                 "tried_methods": auth_methods,
                 "last_error": last_error,
                 "has_function_key": bool(self.function_key),
-                "url_has_code": 'code=' in self.function_url.lower(),
-                "recommendations": [
-                    "Verify bot has Contributor access to Function App in Azure Portal",
-                    "Check Function App authentication settings",
-                    "Test function directly in Azure Portal",
-                    "Verify AZURE_FUNCTION_URL is correct"
-                ]
+                "url_has_code": 'code=' in self.function_url.lower()
             }
         }
 
@@ -275,56 +271,94 @@ class CostTracker:
         }
 
 class UserAuthHandler:
-    """Handles user authentication information extraction"""
+    """Handles user authentication information extraction for Microsoft auth"""
     
     @staticmethod
     def extract_user_info(request: Request) -> dict:
-        """Extract user information from request headers/tokens"""
+        """Extract user information from Microsoft authentication headers"""
         user_info = {
-            "name": "Unknown User",
-            "email": "unknown@domain.com",
+            "name": "Guest User",
+            "email": "user@domain.com",
             "authenticated": False,
             "tenant": "Unknown",
-            "roles": []
+            "roles": [],
+            "auth_type": "none"
         }
         
-        # Try to get user info from various sources
-        auth_header = request.headers.get('Authorization', '')
-        if auth_header.startswith('Bearer '):
-            token = auth_header[7:]
-            try:
-                decoded = jwt.decode(token, options={"verify_signature": False})
-                user_info.update({
-                    "name": decoded.get('name', decoded.get('preferred_username', 'Unknown')),
-                    "email": decoded.get('email', decoded.get('upn', 'unknown@domain.com')),
-                    "authenticated": True,
-                    "tenant": decoded.get('tid', 'Unknown'),
-                    "roles": decoded.get('roles', [])
-                })
-            except:
-                pass
-        
+        # Check for Microsoft authentication headers
+        # X-MS-CLIENT-PRINCIPAL-NAME contains the user's name/email
+        ms_client_principal_name = request.headers.get('X-MS-CLIENT-PRINCIPAL-NAME')
+        ms_client_principal_id = request.headers.get('X-MS-CLIENT-PRINCIPAL-ID')
         ms_client_principal = request.headers.get('X-MS-CLIENT-PRINCIPAL')
+        
+        if ms_client_principal_name:
+            user_info.update({
+                "name": ms_client_principal_name,
+                "email": ms_client_principal_name,
+                "authenticated": True,
+                "auth_type": "microsoft"
+            })
+            logger.info(f"Found Microsoft auth user: {ms_client_principal_name}")
+        
+        # Try to decode the principal header if available
         if ms_client_principal:
             try:
-                import base64
+                # The principal is base64 encoded JSON
                 decoded = base64.b64decode(ms_client_principal).decode('utf-8')
-                principal = json.loads(decoded)
-                user_info.update({
-                    "name": principal.get('user_id', 'Unknown'),
-                    "email": principal.get('user_claims', [{}])[0].get('val', 'unknown@domain.com'),
-                    "authenticated": True,
-                    "auth_type": principal.get('auth_typ', 'Unknown')
-                })
-            except:
-                pass
+                principal_data = json.loads(decoded)
+                
+                # Extract additional info from principal
+                if 'userDetails' in principal_data:
+                    user_info["name"] = principal_data['userDetails']
+                
+                if 'userId' in principal_data:
+                    user_info["email"] = principal_data['userId']
+                
+                if 'identityProvider' in principal_data:
+                    user_info["auth_type"] = principal_data['identityProvider']
+                
+                # Extract claims
+                if 'claims' in principal_data:
+                    for claim in principal_data['claims']:
+                        if claim.get('typ') == 'name':
+                            user_info["name"] = claim.get('val', user_info["name"])
+                        elif claim.get('typ') == 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress':
+                            user_info["email"] = claim.get('val', user_info["email"])
+                        elif claim.get('typ') == 'http://schemas.microsoft.com/identity/claims/tenantid':
+                            user_info["tenant"] = claim.get('val', 'Unknown')
+                        elif claim.get('typ') == 'roles':
+                            user_info["roles"].append(claim.get('val', ''))
+                
+                user_info["authenticated"] = True
+                logger.info(f"Decoded principal data for user: {user_info['name']}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to decode MS principal: {e}")
         
-        if request.headers.get('X-User-Name'):
-            user_info.update({
-                "name": request.headers.get('X-User-Name'),
-                "email": request.headers.get('X-User-Email', 'unknown@domain.com'),
-                "authenticated": True
-            })
+        # Try authorization header as fallback
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer ') and not user_info["authenticated"]:
+            token = auth_header[7:]
+            try:
+                # Decode without verification (for display purposes only)
+                decoded = jwt.decode(token, options={"verify_signature": False})
+                user_info.update({
+                    "name": decoded.get('name', decoded.get('preferred_username', user_info["name"])),
+                    "email": decoded.get('email', decoded.get('upn', user_info["email"])),
+                    "authenticated": True,
+                    "tenant": decoded.get('tid', 'Unknown'),
+                    "roles": decoded.get('roles', []),
+                    "auth_type": "bearer_token"
+                })
+            except Exception as e:
+                logger.warning(f"Failed to decode JWT: {e}")
+        
+        # Format the name nicely
+        if user_info["authenticated"] and "@" in user_info["name"]:
+            # Extract name part before @ if it's an email
+            user_info["display_name"] = user_info["name"].split("@")[0].replace(".", " ").title()
+        else:
+            user_info["display_name"] = user_info["name"]
         
         return user_info
 
@@ -355,14 +389,13 @@ class EnhancedAdminDashboard:
         uptime_info = self.uptime_tracker.get_uptime()
         perf_stats = self.uptime_tracker.get_performance_stats()
         
+        # Get basic config info without exposing sensitive data
         config = {
             "botUrl": f"https://{request.host}",
-            "functionUrl": os.environ.get("AZURE_FUNCTION_URL", ""),
-            "functionKey": "***" + os.environ.get("AZURE_FUNCTION_KEY", "")[-4:] if os.environ.get("AZURE_FUNCTION_KEY") else "Not set",
-            "openaiEndpoint": os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
-            "openaiDeployment": os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini"),
+            "functionConfigured": bool(os.environ.get("AZURE_FUNCTION_URL")),
+            "openaiConfigured": bool(os.environ.get("AZURE_OPENAI_ENDPOINT")),
             "environment": os.environ.get("DEPLOYMENT_ENV", "production"),
-            "appId": os.environ.get("MICROSOFT_APP_ID", "")[:8] + "***" if os.environ.get("MICROSOFT_APP_ID") else "Not set"
+            "authMethod": "url_embedded" if "code=" in os.environ.get("AZURE_FUNCTION_URL", "") else "standard"
         }
         
         today = datetime.now().strftime("%Y-%m-%d")
@@ -374,7 +407,7 @@ class EnhancedAdminDashboard:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SQL Assistant Bot - Enhanced Admin Dashboard</title>
+    <title>SQL Assistant Bot - Admin Dashboard</title>
     <style>
         {self._get_enhanced_dashboard_css()}
     </style>
@@ -386,7 +419,7 @@ class EnhancedAdminDashboard:
             <div class="header-content">
                 <div class="title-section">
                     <h1>🤖 SQL Assistant Bot - Admin Dashboard</h1>
-                    <p>Real-time monitoring, cost tracking & analytics • Environment: {config["environment"]}</p>
+                    <p>Real-time monitoring & analytics • Environment: {config["environment"]}</p>
                 </div>
                 <div class="user-section">
                     <div class="user-info">
@@ -394,10 +427,10 @@ class EnhancedAdminDashboard:
                             <span class="avatar-icon">👤</span>
                         </div>
                         <div class="user-details">
-                            <div class="user-name">{user_info["name"]}</div>
+                            <div class="user-name">{user_info["display_name"]}</div>
                             <div class="user-email">{user_info["email"]}</div>
                             <div class="auth-status {'authenticated' if user_info['authenticated'] else 'not-authenticated'}">
-                                {'🟢 Authenticated' if user_info['authenticated'] else '🔴 Not Authenticated'}
+                                {'🟢 ' + user_info['auth_type'].title() if user_info['authenticated'] else '🔴 Not Authenticated'}
                             </div>
                         </div>
                     </div>
@@ -406,8 +439,7 @@ class EnhancedAdminDashboard:
             <div class="server-info">
                 <span>Server: {request.host}</span> • 
                 <span>Time: <span id="currentTime">{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</span></span> •
-                <span>Uptime: <span id="uptimeDisplay">{uptime_info["uptime_formatted"]}</span></span> •
-                <span>Tenant: {user_info.get('tenant', 'N/A')}</span>
+                <span>Uptime: <span id="uptimeDisplay">{uptime_info["uptime_formatted"]}</span></span>
             </div>
         </div>
 
@@ -475,12 +507,12 @@ class EnhancedAdminDashboard:
                             <span class="metric-value status-healthy">🟢 Healthy</span>
                         </div>
                         <div class="metric">
-                            <span class="metric-label">Memory:</span>
-                            <span class="metric-value">Checking...</span>
+                            <span class="metric-label">Auth:</span>
+                            <span class="metric-value">{config["authMethod"]}</span>
                         </div>
                         <div class="metric">
-                            <span class="metric-label">Disk:</span>
-                            <span class="metric-value">Checking...</span>
+                            <span class="metric-label">Services:</span>
+                            <span class="metric-value">Active</span>
                         </div>
                     </div>
                 </div>
@@ -594,33 +626,37 @@ class EnhancedAdminDashboard:
             </div>
         </div>
 
-        <!-- Environment Configuration -->
+        <!-- Service Status Section (No Environment Variables) -->
         <div class="config-section">
-            <h2>⚙️ Environment Configuration</h2>
-            <div class="config-grid">
-                <div class="config-display">
-                    <label>Bot URL:</label>
-                    <div class="config-value">{config["botUrl"]}</div>
+            <h2>⚙️ Service Status</h2>
+            <div class="service-status-grid">
+                <div class="service-status">
+                    <div class="service-icon">🤖</div>
+                    <div class="service-info">
+                        <div class="service-name">Bot Framework</div>
+                        <div class="service-state" id="botFrameworkStatus">Checking...</div>
+                    </div>
                 </div>
-                <div class="config-display">
-                    <label>App ID:</label>
-                    <div class="config-value">{config["appId"]}</div>
+                <div class="service-status">
+                    <div class="service-icon">🧠</div>
+                    <div class="service-info">
+                        <div class="service-name">Azure OpenAI</div>
+                        <div class="service-state" id="openAIStatus">{'Configured' if config["openaiConfigured"] else 'Not Configured'}</div>
+                    </div>
                 </div>
-                <div class="config-display">
-                    <label>Azure Function:</label>
-                    <div class="config-value">{config["functionUrl"] or "Not configured"}</div>
+                <div class="service-status">
+                    <div class="service-icon">🗄️</div>
+                    <div class="service-info">
+                        <div class="service-name">SQL Function</div>
+                        <div class="service-state" id="sqlFunctionStatus">{'Configured' if config["functionConfigured"] else 'Not Configured'}</div>
+                    </div>
                 </div>
-                <div class="config-display">
-                    <label>Function Key:</label>
-                    <div class="config-value">{config["functionKey"]}</div>
-                </div>
-                <div class="config-display">
-                    <label>OpenAI Endpoint:</label>
-                    <div class="config-value">{config["openaiEndpoint"] or "Not configured"}</div>
-                </div>
-                <div class="config-display">
-                    <label>OpenAI Deployment:</label>
-                    <div class="config-value">{config["openaiDeployment"]}</div>
+                <div class="service-status">
+                    <div class="service-icon">🔐</div>
+                    <div class="service-info">
+                        <div class="service-name">Authentication</div>
+                        <div class="service-state">{config["authMethod"].replace("_", " ").title()}</div>
+                    </div>
                 </div>
             </div>
             <div class="action-buttons">
@@ -735,7 +771,7 @@ class EnhancedAdminDashboard:
             <div class="log-viewer" id="logViewer">
                 <div class="log-entry info">
                     <span class="timestamp">[{datetime.now().strftime("%H:%M:%S")}]</span>
-                    <span class="message">Enhanced admin dashboard initialized for {user_info["name"]} • Uptime: {uptime_info["uptime_formatted"]}</span>
+                    <span class="message">Admin dashboard initialized for {user_info["display_name"]} • Uptime: {uptime_info["uptime_formatted"]}</span>
                     <span class="cost-info">$0.000</span>
                 </div>
             </div>
@@ -1153,8 +1189,11 @@ Uptime: {uptime_info['uptime_formatted']}"""
             health_data = await self._get_comprehensive_health()
             result = {
                 "success": health_data["has_critical_vars"],
-                "missing_variables": health_data["missing_variables"],
-                "environment_variables": health_data["environment_variables"]
+                "service_status": {
+                    "bot_framework": "configured" if health_data["has_critical_vars"] else "missing config",
+                    "azure_openai": "configured" if health_data["openai_configured"] else "not configured",
+                    "sql_function": "configured" if health_data["function_configured"] else "not configured"
+                }
             }
             return json_response({
                 "status": "success",
@@ -1191,8 +1230,9 @@ Uptime: {uptime_info['uptime_formatted']}"""
             message = data.get("message", "")
             user_info = self.user_auth.extract_user_info(request)
             
+            # Process the chat message
+            response_text, databases = await self._process_chat_message(message)
             estimated_cost = len(message) * 0.00001
-            response_text = await self._process_chat_message(message)
             
             await self._track_api_cost("chat_message", estimated_cost, {
                 "user": user_info["name"],
@@ -1203,6 +1243,7 @@ Uptime: {uptime_info['uptime_formatted']}"""
             return json_response({
                 "status": "success",
                 "response": response_text,
+                "databases": databases,
                 "cost": estimated_cost,
                 "timestamp": datetime.now().isoformat()
             })
@@ -1213,12 +1254,13 @@ Uptime: {uptime_info['uptime_formatted']}"""
                 "timestamp": datetime.now().isoformat()
             }, status=500)
     
-    async def _process_chat_message(self, message: str) -> str:
+    async def _process_chat_message(self, message: str) -> tuple[str, list]:
         """Process a chat message and return a response"""
         message_lower = message.lower().strip()
+        databases = []
         
         if message_lower in ["hello", "hi", "hey"]:
-            return "Hello! I'm the SQL Assistant Bot with cost tracking and uptime monitoring. Type /help to see what I can do!"
+            return "Hello! I'm the SQL Assistant Bot with cost tracking and uptime monitoring. Type /help to see what I can do!", []
         elif message_lower == "/help":
             return """Available commands:
 - /database list - List available databases
@@ -1227,51 +1269,54 @@ Uptime: {uptime_info['uptime_formatted']}"""
 - /usage - View token usage and costs
 - /uptime - View system uptime
 - /explore <question> - Deep exploration mode
-- Or just ask a natural language question about your data!"""
+- Or just ask a natural language question about your data!""", []
         elif message_lower == "/usage":
             today = datetime.now().strftime("%Y-%m-%d")
             daily_cost = self.usage_stats["daily_costs"].get(today, 0.0)
-            return f"💰 Today's usage: ${daily_cost:.3f} | Queries: {len(self.usage_stats['query_history'])} | Budget remaining: ${50.0 - daily_cost:.3f}"
+            return f"💰 Today's usage: ${daily_cost:.3f} | Queries: {len(self.usage_stats['query_history'])} | Budget remaining: ${50.0 - daily_cost:.3f}", []
         elif message_lower == "/uptime":
             uptime_info = self.uptime_tracker.get_uptime()
-            return f"⏱️ Uptime: {uptime_info['uptime_formatted']} | Started: {uptime_info['start_time'][:19]} | Restarts: {uptime_info['restart_count']}"
+            return f"⏱️ Uptime: {uptime_info['uptime_formatted']} | Started: {uptime_info['start_time'][:19]} | Restarts: {uptime_info['restart_count']}", []
         elif message_lower == "/database list":
-            return "To see databases, I need to connect to your SQL Function. Make sure authentication is properly configured!"
+            # Call the SQL function to get databases
+            try:
+                result = await self.function_auth.call_function({"query_type": "metadata"})
+                if result["success"]:
+                    databases = result["data"].get("databases", [])
+                    if databases:
+                        response = f"📚 Available Databases ({len(databases)}):\n"
+                        for db in databases[:10]:
+                            response += f"• {db}\n"
+                        if len(databases) > 10:
+                            response += f"\n... and {len(databases) - 10} more"
+                        return response, databases
+                    else:
+                        return "No databases found. Check SQL Function configuration.", []
+                else:
+                    return f"❌ Failed to retrieve databases: {result['error']}", []
+            except Exception as e:
+                return f"❌ Error getting databases: {str(e)}", []
         elif message_lower == "/stats":
             uptime_info = self.uptime_tracker.get_uptime()
-            return f"📊 Statistics: {len(self.usage_stats['user_sessions'])} active users, {len(self.usage_stats['query_history'])} queries today, ${sum(self.usage_stats['daily_costs'].values()):.3f} total cost, {uptime_info['uptime_formatted']} uptime"
+            return f"📊 Statistics: {len(self.usage_stats['user_sessions'])} active users, {len(self.usage_stats['query_history'])} queries today, ${sum(self.usage_stats['daily_costs'].values()):.3f} total cost, {uptime_info['uptime_formatted']} uptime", []
         elif message_lower.startswith("/"):
-            return f"Command '{message}' recognized. Full functionality requires connection to Teams."
+            return f"Command '{message}' recognized. Full functionality requires connection to Teams.", []
         else:
-            return f"I understand you want to know about: '{message}'. In production, I would translate this to SQL and query your database! Estimated cost: $0.012"
+            return f"I understand you want to know about: '{message}'. In production, I would translate this to SQL and query your database! Estimated cost: $0.012", []
     
     async def _get_comprehensive_health(self) -> dict:
         """Get comprehensive health information"""
-        required_vars = [
-            "MICROSOFT_APP_ID", "MICROSOFT_APP_PASSWORD",
-            "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY",
-            "AZURE_FUNCTION_URL"
-        ]
-        
-        env_status = {}
-        missing_vars = []
-        
-        for var in required_vars:
-            value = os.environ.get(var)
-            env_status[var] = bool(value)
-            if not value:
-                missing_vars.append(var)
-        
-        optional_vars = ["AZURE_FUNCTION_KEY", "AZURE_OPENAI_DEPLOYMENT_NAME"]
-        for var in optional_vars:
-            env_status[var] = bool(os.environ.get(var))
+        # Check service configuration (without exposing actual values)
+        has_bot_config = bool(os.environ.get("MICROSOFT_APP_ID")) and bool(os.environ.get("MICROSOFT_APP_PASSWORD"))
+        has_openai_config = bool(os.environ.get("AZURE_OPENAI_ENDPOINT")) and bool(os.environ.get("AZURE_OPENAI_API_KEY"))
+        has_function_config = bool(os.environ.get("AZURE_FUNCTION_URL"))
         
         uptime_info = self.uptime_tracker.get_uptime()
         
         return {
-            "environment_variables": env_status,
-            "missing_variables": missing_vars,
-            "has_critical_vars": len(missing_vars) == 0,
+            "has_critical_vars": has_bot_config,
+            "openai_configured": has_openai_config,
+            "function_configured": has_function_config,
             "sql_translator_available": self.sql_translator is not None,
             "bot_available": self.bot is not None,
             "python_version": os.sys.version,
@@ -1281,21 +1326,20 @@ Uptime: {uptime_info['uptime_formatted']}"""
     
     async def _test_openai_connection(self) -> dict:
         """Test Azure OpenAI connection"""
-        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-        api_key = os.environ.get("AZURE_OPENAI_API_KEY")
-        deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini")
-        
-        if not endpoint or not api_key:
+        if not os.environ.get("AZURE_OPENAI_ENDPOINT") or not os.environ.get("AZURE_OPENAI_API_KEY"):
             return {
                 "success": False,
-                "error": "Missing OpenAI configuration",
+                "error": "Azure OpenAI not configured",
                 "details": {
-                    "has_endpoint": bool(endpoint),
-                    "has_api_key": bool(api_key)
+                    "configured": False
                 }
             }
         
         try:
+            endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+            api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+            deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini")
+            
             if endpoint.endswith('/'):
                 endpoint = endpoint.rstrip('/')
             
@@ -1328,7 +1372,6 @@ Uptime: {uptime_info['uptime_formatted']}"""
                             "details": {
                                 "status_code": response.status,
                                 "deployment": deployment,
-                                "endpoint": endpoint,
                                 "model": data.get("model", "unknown"),
                                 "response_time_ms": response_time
                             }
@@ -1502,6 +1545,49 @@ Uptime: {uptime_info['uptime_formatted']}"""
             font-size: 0.9rem;
             opacity: 0.8;
             text-align: center;
+        }
+
+        /* Service Status Section */
+        .service-status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+
+        .service-status {
+            display: flex;
+            align-items: center;
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            border-left: 4px solid #667eea;
+            transition: transform 0.3s;
+        }
+
+        .service-status:hover {
+            transform: translateY(-2px);
+        }
+
+        .service-icon {
+            font-size: 2rem;
+            margin-right: 15px;
+        }
+
+        .service-info {
+            flex: 1;
+        }
+
+        .service-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 5px;
+            color: #333;
+        }
+
+        .service-state {
+            font-size: 0.9rem;
+            color: #666;
         }
 
         /* Uptime Dashboard */
@@ -2089,6 +2175,7 @@ Uptime: {uptime_info['uptime_formatted']}"""
             margin-bottom: 5px;
             line-height: 1.4;
             word-wrap: break-word;
+            white-space: pre-wrap;
         }
 
         .message-meta {
@@ -2236,6 +2323,7 @@ Uptime: {uptime_info['uptime_formatted']}"""
             .cost-grid { grid-template-columns: 1fr; }
             .uptime-grid { grid-template-columns: 1fr; }
             .analytics-grid { grid-template-columns: 1fr; }
+            .service-status-grid { grid-template-columns: 1fr; }
         }
         '''
     
@@ -2353,8 +2441,8 @@ Uptime: {uptime_info['uptime_formatted']}"""
                         <span class="metric-value status-healthy">🟢 Healthy</span>
                     </div>
                     <div class="metric">
-                        <span class="metric-label">Memory:</span>
-                        <span class="metric-value">Checking...</span>
+                        <span class="metric-label">Auth:</span>
+                        <span class="metric-value">${CONFIG.authMethod}</span>
                     </div>
                     <div class="metric">
                         <span class="metric-label">Uptime:</span>
@@ -2363,26 +2451,12 @@ Uptime: {uptime_info['uptime_formatted']}"""
                 `;
             }
             
-            // Simulate health check
-            setTimeout(() => {
-                if (healthEl) {
-                    healthEl.innerHTML = `
-                        <div class="metric">
-                            <span class="metric-label">Status:</span>
-                            <span class="metric-value status-healthy">🟢 Operational</span>
-                        </div>
-                        <div class="metric">
-                            <span class="metric-label">Memory:</span>
-                            <span class="metric-value">~250MB</span>
-                        </div>
-                        <div class="metric">
-                            <span class="metric-label">Response:</span>
-                            <span class="metric-value">Fast</span>
-                        </div>
-                    `;
-                }
-                log('✅ System health check completed', 'success');
-            }, 1000);
+            // Update service status
+            updateElementText('botFrameworkStatus', CONFIG.functionConfigured ? 'Active' : 'Not Configured');
+            updateElementText('openAIStatus', CONFIG.openaiConfigured ? 'Active' : 'Not Configured');
+            updateElementText('sqlFunctionStatus', CONFIG.functionConfigured ? 'Active' : 'Not Configured');
+            
+            log('✅ System health check completed', 'success');
         }
 
         function viewPerformanceDetails() {
@@ -2589,8 +2663,7 @@ Uptime: {uptime_info['uptime_formatted']}"""
                 
                 if (result.status === 'success') {
                     const data = result.data;
-                    const details = `Environment: ${data.has_critical_vars ? 'OK' : 'Missing vars'}
-Python: ${data.python_version.split(' ')[0]}
+                    const details = `Services Configured:
 Translator: ${data.sql_translator_available ? 'Available' : 'Not available'}
 Bot: ${data.bot_available ? 'Available' : 'Not available'}
 Uptime: ${data.uptime.uptime_formatted}`;
@@ -2884,7 +2957,7 @@ Status: ${data.status}`;
             }
         }
 
-        function addChatMessage(content, sender = 'user', type = 'normal', cost = 0.0) {
+        function addChatMessage(content, sender = 'user', type = 'normal', cost = 0.0, databases = []) {
             const chatMessages = document.getElementById('chatMessages');
             const messageDiv = document.createElement('div');
             
@@ -2924,7 +2997,7 @@ Status: ${data.status}`;
                 
                 if (result.status === 'success') {
                     const cost = result.cost || 0.0;
-                    addChatMessage(result.response, 'bot', 'normal', cost);
+                    addChatMessage(result.response, 'bot', 'normal', cost, result.databases);
                     log(`✅ Message processed successfully (Cost: ${cost.toFixed(3)})`, 'success', cost);
                 } else {
                     addChatMessage(`Error: ${result.error}`, 'system', 'error');
@@ -2986,11 +3059,11 @@ Status: ${data.status}`;
 
         // Initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
-            log(`🚀 Enhanced admin dashboard initialized for ${USER_INFO.name}`, 'success');
+            log(`🚀 Admin dashboard initialized for ${USER_INFO.display_name}`, 'success');
             log(`📍 Server: ${CONFIG.botUrl}`, 'info');
-            log(`👤 User: ${USER_INFO.email} (${USER_INFO.authenticated ? 'Authenticated' : 'Not Authenticated'})`, 'info');
+            log(`👤 User: ${USER_INFO.email} (${USER_INFO.authenticated ? USER_INFO.auth_type : 'Not Authenticated'})`, 'info');
             log(`⏱️ Uptime: ${UPTIME_INFO.uptime_formatted}`, 'info');
-            log('💡 Click "Run All Tests" to check system status with enhanced authentication', 'info');
+            log('💡 Click "Run All Tests" to check system status', 'info');
             
             setInterval(updateCurrentTime, 1000);
             refreshCosts();
@@ -3051,7 +3124,7 @@ def add_admin_routes(app, sql_translator=None, bot=None):
     app.router.add_get('/admin/api/cost-report', dashboard.api_export_cost_report)
     app.router.add_get('/admin/api/cost-monitoring', dashboard.api_test_cost_monitoring)
     
-    # New uptime tracking endpoints
+    # Uptime tracking endpoints
     app.router.add_get('/admin/api/uptime', dashboard.api_get_uptime)
     app.router.add_get('/admin/api/uptime-report', dashboard.api_export_uptime_report)
     
