@@ -1,7 +1,7 @@
-# sql-assistant/bot/teams_sql_bot.py
+# teams_sql_bot.py - Updated Teams SQL Assistant Bot with URL-embedded authentication
 """
-Enhanced Teams SQL Assistant Bot with MCP Pattern Integration
-Complete integration with centralized pattern learning and token limiting
+Enhanced Teams SQL Assistant Bot
+Updated to use URL-embedded authentication (no separate function key needed)
 """
 
 import os
@@ -41,125 +41,31 @@ class QueryExecution:
     pattern_id: Optional[str] = None
 
 
-class EnhancedMCPClient:
-    """Enhanced MCP client wrapper with proper tool calling"""
-    
-    def __init__(self, url: str):
-        self.url = url
-        self.session = None
-        self.connected = False
-        
-    async def connect(self):
-        """Connect to MCP server"""
-        import aiohttp
-        self.session = aiohttp.ClientSession()
-        
-        # Test connection
-        try:
-            async with self.session.get(f"{self.url}/health") as response:
-                if response.status == 200:
-                    self.connected = True
-                    logger.info(f"Connected to MCP server at {self.url}")
-                else:
-                    logger.error(f"MCP server returned status {response.status}")
-        except Exception as e:
-            logger.error(f"Failed to connect to MCP server: {e}")
-            self.connected = False
-            
-    async def close(self):
-        """Close MCP connection"""
-        if self.session:
-            await self.session.close()
-            self.connected = False
-            
-    async def call_tool(self, tool_name: str, **kwargs) -> Dict[str, Any]:
-        """Call an MCP tool with parameters"""
-        if not self.connected:
-            logger.warning("MCP client not connected")
-            return {"error": "Not connected"}
-            
-        try:
-            # MCP tool calling format
-            payload = {
-                "jsonrpc": "2.0",
-                "method": "tools.call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": kwargs
-                },
-                "id": 1
-            }
-            
-            async with self.session.post(
-                f"{self.url}/rpc",
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    # Extract result from JSON-RPC response
-                    if "result" in result:
-                        return result["result"]
-                    elif "error" in result:
-                        logger.error(f"MCP tool error: {result['error']}")
-                        return {"error": result["error"]["message"]}
-                else:
-                    return {"error": f"Status {response.status}"}
-                    
-        except asyncio.TimeoutError:
-            logger.error(f"MCP tool call timeout: {tool_name}")
-            return {"error": "Timeout"}
-        except Exception as e:
-            logger.error(f"MCP tool call failed: {e}")
-            return {"error": str(e)}
-    
-    async def get_database_context(self, database: str = None) -> Optional[Dict[str, Any]]:
-        """Get database context from MCP"""
-        return await self.call_tool("get_database_context", database=database)
-    
-    async def find_pattern(self, question: str, database: str, 
-                          schema_hash: str) -> Dict[str, Any]:
-        """Find matching patterns"""
-        return await self.call_tool(
-            "find_pattern",
-            question=question,
-            database=database,
-            schema_hash=schema_hash
-        )
-    
-    async def learn_pattern(self, **kwargs) -> Dict[str, Any]:
-        """Learn a new pattern"""
-        return await self.call_tool("learn_pattern", **kwargs)
-    
-    async def get_pattern_statistics(self) -> Dict[str, Any]:
-        """Get pattern statistics"""
-        return await self.call_tool("get_pattern_statistics")
-    
-    async def get_cache_statistics(self) -> Dict[str, Any]:
-        """Get cache statistics"""
-        return await self.call_tool("get_cache_statistics")
-    
-    async def refresh_all_metadata(self) -> Dict[str, Any]:
-        """Refresh all metadata"""
-        return await self.call_tool("refresh_all_metadata")
-
-
 class SQLAssistantBot(ActivityHandler):
-    """Enhanced Teams bot for SQL query assistance with MCP integration"""
+    """Enhanced Teams bot for SQL query assistance with URL-embedded authentication"""
     
     def __init__(self, 
                  conversation_state: ConversationState,
                  user_state: UserState,
                  sql_translator: AzureOpenAISQLTranslator,
                  function_url: str,
-                 function_key: str,
+                 function_key: str = None,  # Optional - not needed for URL-embedded auth
                  mcp_client: Any = None):
         self.conversation_state = conversation_state
         self.user_state = user_state
         self.sql_translator = sql_translator
         self.function_url = function_url
-        self.function_key = function_key
+        self.function_key = function_key  # Will be None for URL-embedded auth
         self.mcp_client = mcp_client
+        
+        # Log authentication method
+        if self.function_url and "code=" in self.function_url:
+            logger.info("✅ Using URL-embedded authentication for Azure Function")
+            logger.info("ℹ️ Function key not needed - authentication is in URL")
+        elif self.function_key:
+            logger.info("ℹ️ Using separate function key authentication")
+        else:
+            logger.warning("⚠️ No authentication method configured for Azure Function")
         
         # Create accessors
         self.conversation_data_accessor = self.conversation_state.create_property("ConversationData")
@@ -191,7 +97,7 @@ class SQLAssistantBot(ActivityHandler):
             "/patterns": self._handle_patterns_command,
             "/stats": self._handle_stats_command,
             "/cache": self._handle_cache_command,
-            "/usage": self._handle_usage_command  # NEW: Token usage command
+            "/usage": self._handle_usage_command
         }
     
     async def on_message_activity(self, turn_context: TurnContext) -> None:
@@ -285,61 +191,11 @@ Type /help to see all available commands.""",
                                             query: str, 
                                             conversation_data: Dict,
                                             user_profile: Dict) -> None:
-        """Process natural language query with MCP pattern checking"""
+        """Process natural language query"""
         # Send typing indicator
         await turn_context.send_activity(Activity(type="typing"))
         
         context = conversation_data["context"]
-        
-        # Check for MCP patterns first
-        pattern_found = False
-        if self.mcp_client and context.current_database:
-            try:
-                # Get schema hash from MCP
-                db_context = await self.mcp_client.get_database_context(context.current_database)
-                schema_hash = db_context.get("schema_hash", "") if db_context else ""
-                
-                if schema_hash:
-                    # Check for patterns
-                    pattern_result = await self.mcp_client.find_pattern(
-                        query, context.current_database, schema_hash
-                    )
-                    
-                    if pattern_result.get("found") and pattern_result.get("best_match"):
-                        pattern = pattern_result["best_match"]
-                        pattern_found = True
-                        
-                        # Show pattern match card
-                        pattern_card = self._create_pattern_match_card(pattern)
-                        await turn_context.send_activity(MessageFactory.attachment(pattern_card))
-                        
-                        # Ask if user wants to use the pattern
-                        await turn_context.send_activity(
-                            MessageFactory.suggested_actions(
-                                SuggestedActions(
-                                    suggestions=[
-                                        CardAction(
-                                            type=ActionTypes.im_back,
-                                            title="Use Pattern",
-                                            value=f"/use_pattern {pattern.get('pattern_id', '')}"
-                                        ),
-                                        CardAction(
-                                            type=ActionTypes.im_back,
-                                            title="New Query",
-                                            value="/new_query"
-                                        )
-                                    ]
-                                ),
-                                f"Found similar pattern with {pattern['confidence']:.0%} confidence. Use it?"
-                            )
-                        )
-                        
-                        # Store pattern info for potential use
-                        conversation_data["pending_pattern"] = pattern
-                        return
-                        
-            except Exception as e:
-                logger.warning(f"Failed to check MCP patterns: {e}")
         
         # Get schema hint from MCP if available
         schema_hint = None
@@ -407,102 +263,15 @@ Type /help to see all available commands.""",
         # Track execution
         conversation_data["executions"].append(asdict(execution))
     
-    async def _process_autonomous_query(self, turn_context: TurnContext, 
-                                       query: str, 
-                                       conversation_data: Dict,
-                                       user_profile: Dict,
-                                       enable_explanation: bool = False) -> None:
-        """Process query in autonomous exploration mode"""
-        context = conversation_data["context"]
-        
-        # Check if database is set
-        if not context.current_database:
-            await turn_context.send_activity(
-                MessageFactory.text("Please set a database first using `/database set <name>`")
-            )
-            return
-        
-        # Send initial message
-        mode_text = "with detailed explanation" if enable_explanation else ""
-        await turn_context.send_activity(
-            MessageFactory.text(f"🤖 Starting autonomous exploration {mode_text}. I'll analyze your question and run multiple queries to find the complete answer...")
-        )
-        
-        # Show typing indicator
-        await turn_context.send_activity(Activity(type="typing"))
-        
-        try:
-            # Start autonomous exploration
-            result = await self.autonomous_explorer.explore_and_answer(
-                user_question=query,
-                database=context.current_database,
-                enable_learning=True,
-                enable_explanation=enable_explanation,
-                export_session=True
-            )
-            
-            # Create detailed response card
-            exploration_card = self._create_exploration_results_card(result)
-            await turn_context.send_activity(MessageFactory.attachment(exploration_card))
-            
-            # Send the final answer
-            confidence_emoji = "🟢" if result["confidence"] > 0.8 else "🟡" if result["confidence"] > 0.5 else "🔴"
-            pattern_emoji = "♻️" if result.get("using_mcp_pattern") else "🆕"
-            
-            answer_text = f"""**Answer {confidence_emoji} {pattern_emoji}**
-
-{result['answer']}
-
-*Confidence: {result['confidence']:.0%}*
-*Method: {'MCP Pattern Reuse' if result.get('using_mcp_pattern') else 'Fresh Exploration'}*
-*Queries executed: {result['queries_executed']}*
-*Iterations: {result['iterations_used']}*"""
-            
-            await turn_context.send_activity(MessageFactory.text(answer_text))
-            
-            # If explanation enabled, show reasoning
-            if enable_explanation and "explanation_summary" in result:
-                explanation_card = self._create_explanation_card(result["explanation_summary"])
-                await turn_context.send_activity(MessageFactory.attachment(explanation_card))
-            
-            # Show query history if user wants details
-            if result['queries_executed'] > 1:
-                await turn_context.send_activity(
-                    MessageFactory.suggested_actions(
-                        SuggestedActions(
-                            suggestions=[
-                                CardAction(
-                                    type=ActionTypes.im_back,
-                                    title="Show query details",
-                                    value="/show_exploration_details"
-                                ),
-                                CardAction(
-                                    type=ActionTypes.im_back,
-                                    title="Export results",
-                                    value="/export"
-                                )
-                            ]
-                        ),
-                        "Would you like to see the exploration details?"
-                    )
-                )
-            
-            # Store exploration results in context
-            conversation_data["last_exploration"] = result
-            
-        except Exception as e:
-            logger.error(f"Error in autonomous exploration: {e}", exc_info=True)
-            await turn_context.send_activity(
-                MessageFactory.text(f"❌ Error during exploration: {str(e)}")
-            )
-    
     async def _execute_sql_query(self, sql_query: SQLQuery, output_format: str = "natural_language") -> Dict[str, Any]:
-        """Execute SQL query via Azure Function"""
+        """Execute SQL query via Azure Function with URL-embedded authentication"""
         async with aiohttp.ClientSession() as session:
             headers = {
-                "Content-Type": "application/json",
-                "x-functions-key": self.function_key
+                "Content-Type": "application/json"
             }
+            
+            # For URL-embedded auth, we don't need the x-functions-key header
+            # The authentication is already in the URL
             
             # Determine query type
             query_type = "single"
@@ -518,11 +287,17 @@ Type /help to see all available commands.""",
                 "output_format": output_format
             }
             
+            logger.info(f"Executing query via Azure Function (URL-embedded auth)")
+            logger.debug(f"URL: {self.function_url[:50]}...")  # Log partial URL for security
+            logger.debug(f"Payload: {payload}")
+            
             async with session.post(self.function_url, json=payload, headers=headers) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
-                    return {"error": f"Function returned status {response.status}"}
+                    error_text = await response.text()
+                    logger.error(f"Function returned status {response.status}: {error_text}")
+                    return {"error": f"Function returned status {response.status}: {error_text[:200]}"}
     
     async def _send_query_results(self, turn_context: TurnContext, 
                                 result: Dict[str, Any], 
@@ -592,53 +367,6 @@ Type /help to see all available commands.""",
                 )
             )
     
-    def _create_pattern_match_card(self, pattern: Dict[str, Any]) -> Attachment:
-        """Create card showing pattern match details"""
-        card = {
-            "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": {
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "type": "AdaptiveCard",
-                "version": "1.3",
-                "body": [
-                    {
-                        "type": "TextBlock",
-                        "text": "♻️ Found Similar Pattern",
-                        "weight": "bolder",
-                        "size": "large"
-                    },
-                    {
-                        "type": "TextBlock",
-                        "text": f"Pattern: {pattern.get('template', 'Unknown')}",
-                        "wrap": True,
-                        "isSubtle": True
-                    },
-                    {
-                        "type": "FactSet",
-                        "facts": [
-                            {
-                                "title": "Confidence",
-                                "value": f"{pattern.get('confidence', 0):.0%}"
-                            },
-                            {
-                                "title": "Used",
-                                "value": f"{pattern.get('use_count', 0)} times"
-                            },
-                            {
-                                "title": "Avg Time",
-                                "value": f"{pattern.get('avg_execution_time', 0):.0f}ms"
-                            },
-                            {
-                                "title": "Tables",
-                                "value": ", ".join(pattern.get('discovered_tables', [])[:3])
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-        return card
-    
     def _create_query_card(self, sql_query: SQLQuery) -> Attachment:
         """Create card showing query details"""
         confidence_emoji = "🟢" if sql_query.confidence > 0.8 else "🟡" if sql_query.confidence > 0.5 else "🔴"
@@ -692,176 +420,6 @@ Type /help to see all available commands.""",
                         "facts": facts
                     }
                 ]
-            }
-        }
-        
-        return card
-    
-    def _create_exploration_results_card(self, result: Dict[str, Any]) -> Attachment:
-        """Create a card showing exploration results"""
-        # Create facts for the card
-        facts = []
-        
-        # Add discovered tables
-        if result.get("discovered_schema"):
-            tables = list(result["discovered_schema"].keys())
-            facts.append({
-                "title": "Tables Explored",
-                "value": ", ".join(tables[:3]) + (f" +{len(tables)-3} more" if len(tables) > 3 else "")
-            })
-        
-        # Add pattern usage
-        if result.get("using_mcp_pattern"):
-            facts.append({
-                "title": "Method",
-                "value": "Pattern Reuse"
-            })
-        
-        # Add query history summary
-        query_purposes = []
-        for q in result.get("query_history", [])[:3]:
-            purpose = q.get("purpose", "Data exploration")
-            rows = q.get("row_count", 0)
-            query_purposes.append(f"• {purpose} ({rows} rows)")
-        
-        card = {
-            "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": {
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "type": "AdaptiveCard",
-                "version": "1.3",
-                "body": [
-                    {
-                        "type": "Container",
-                        "items": [
-                            {
-                                "type": "TextBlock",
-                                "text": "🔍 Autonomous Exploration Complete",
-                                "weight": "bolder",
-                                "size": "large",
-                                "wrap": True
-                            },
-                            {
-                                "type": "TextBlock",
-                                "text": f"Executed {result['queries_executed']} queries in {result['iterations_used']} iterations",
-                                "isSubtle": True,
-                                "wrap": True
-                            }
-                        ]
-                    },
-                    {
-                        "type": "FactSet",
-                        "facts": facts
-                    },
-                    {
-                        "type": "Container",
-                        "items": [
-                            {
-                                "type": "TextBlock",
-                                "text": "Query Progression:",
-                                "weight": "bolder",
-                                "size": "medium"
-                            },
-                            {
-                                "type": "TextBlock",
-                                "text": "\n".join(query_purposes),
-                                "wrap": True,
-                                "isSubtle": True
-                            }
-                        ]
-                    }
-                ],
-                "actions": [
-                    {
-                        "type": "Action.Submit",
-                        "title": "View Full Details",
-                        "data": {
-                            "action": "show_exploration_details"
-                        }
-                    }
-                ]
-            }
-        }
-        
-        return card
-    
-    def _create_explanation_card(self, explanation_summary: Dict[str, Any]) -> Attachment:
-        """Create detailed explanation card"""
-        decisions = []
-        
-        # Extract key decisions
-        for iteration in explanation_summary.get("detailed_reasoning", [])[:3]:
-            for decision in iteration.get("decisions", [])[:2]:
-                decisions.append({
-                    "iteration": iteration["iteration"],
-                    "type": decision["type"],
-                    "reasoning": decision["reasoning"]
-                })
-        
-        card = {
-            "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": {
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "type": "AdaptiveCard",
-                "version": "1.3",
-                "body": [
-                    {
-                        "type": "TextBlock",
-                        "text": "🧠 Exploration Reasoning",
-                        "weight": "bolder",
-                        "size": "large"
-                    },
-                    {
-                        "type": "TextBlock",
-                        "text": f"Total iterations: {explanation_summary['total_iterations']} | Decisions made: {explanation_summary['decision_count']}",
-                        "isSubtle": True,
-                        "wrap": True
-                    },
-                    {
-                        "type": "Container",
-                        "items": [
-                            {
-                                "type": "TextBlock",
-                                "text": "**Key Decision Points:**",
-                                "weight": "bolder"
-                            }
-                        ] + [
-                            {
-                                "type": "Container",
-                                "items": [
-                                    {
-                                        "type": "TextBlock",
-                                        "text": f"**Iteration {d['iteration']} - {d['type']}**",
-                                        "weight": "bolder",
-                                        "size": "small"
-                                    },
-                                    {
-                                        "type": "TextBlock",
-                                        "text": d["reasoning"],
-                                        "wrap": True,
-                                        "isSubtle": True
-                                    }
-                                ],
-                                "separator": True
-                            } for d in decisions
-                        ]
-                    }
-                ] + ([{
-                    "type": "Container",
-                    "items": [
-                        {
-                            "type": "TextBlock",
-                            "text": "**Key Insights:**",
-                            "weight": "bolder"
-                        },
-                        {
-                            "type": "TextBlock",
-                            "text": "\n".join(f"• {insight}" for insight in explanation_summary.get("key_insights", [])),
-                            "wrap": True
-                        }
-                    ],
-                    "separator": True
-                }] if explanation_summary.get("key_insights") else [])
             }
         }
         
@@ -968,9 +526,9 @@ Just type your question naturally! For example:
             # List databases
             async with aiohttp.ClientSession() as session:
                 headers = {
-                    "Content-Type": "application/json",
-                    "x-functions-key": self.function_key
+                    "Content-Type": "application/json"
                 }
+                # No function key needed for URL-embedded auth
                 
                 payload = {
                     "query_type": "metadata"
@@ -1580,6 +1138,265 @@ You can validate this export later with:
             await turn_context.send_activity(
                 MessageFactory.text("⚠️ Warning: You're approaching your hourly token limit!")
             )
+    
+    async def _process_autonomous_query(self, turn_context: TurnContext, 
+                                       query: str, 
+                                       conversation_data: Dict,
+                                       user_profile: Dict,
+                                       enable_explanation: bool = False) -> None:
+        """Process query in autonomous exploration mode"""
+        context = conversation_data["context"]
+        
+        # Check if database is set
+        if not context.current_database:
+            await turn_context.send_activity(
+                MessageFactory.text("Please set a database first using `/database set <name>`")
+            )
+            return
+        
+        # Send initial message
+        mode_text = "with detailed explanation" if enable_explanation else ""
+        await turn_context.send_activity(
+            MessageFactory.text(f"🤖 Starting autonomous exploration {mode_text}. I'll analyze your question and run multiple queries to find the complete answer...")
+        )
+        
+        # Show typing indicator
+        await turn_context.send_activity(Activity(type="typing"))
+        
+        try:
+            # Start autonomous exploration
+            result = await self.autonomous_explorer.explore_and_answer(
+                user_question=query,
+                database=context.current_database,
+                enable_learning=True,
+                enable_explanation=enable_explanation,
+                export_session=True
+            )
+            
+            # Create detailed response card
+            exploration_card = self._create_exploration_results_card(result)
+            await turn_context.send_activity(MessageFactory.attachment(exploration_card))
+            
+            # Send the final answer
+            confidence_emoji = "🟢" if result["confidence"] > 0.8 else "🟡" if result["confidence"] > 0.5 else "🔴"
+            pattern_emoji = "♻️" if result.get("using_mcp_pattern") else "🆕"
+            
+            answer_text = f"""**Answer {confidence_emoji} {pattern_emoji}**
+
+{result['answer']}
+
+*Confidence: {result['confidence']:.0%}*
+*Method: {'MCP Pattern Reuse' if result.get('using_mcp_pattern') else 'Fresh Exploration'}*
+*Queries executed: {result['queries_executed']}*
+*Iterations: {result['iterations_used']}*"""
+            
+            await turn_context.send_activity(MessageFactory.text(answer_text))
+            
+            # If explanation enabled, show reasoning
+            if enable_explanation and "explanation_summary" in result:
+                explanation_card = self._create_explanation_card(result["explanation_summary"])
+                await turn_context.send_activity(MessageFactory.attachment(explanation_card))
+            
+            # Show query history if user wants details
+            if result['queries_executed'] > 1:
+                await turn_context.send_activity(
+                    MessageFactory.suggested_actions(
+                        SuggestedActions(
+                            suggestions=[
+                                CardAction(
+                                    type=ActionTypes.im_back,
+                                    title="Show query details",
+                                    value="/show_exploration_details"
+                                ),
+                                CardAction(
+                                    type=ActionTypes.im_back,
+                                    title="Export results",
+                                    value="/export"
+                                )
+                            ]
+                        ),
+                        "Would you like to see the exploration details?"
+                    )
+                )
+            
+            # Store exploration results in context
+            conversation_data["last_exploration"] = result
+            
+        except Exception as e:
+            logger.error(f"Error in autonomous exploration: {e}", exc_info=True)
+            await turn_context.send_activity(
+                MessageFactory.text(f"❌ Error during exploration: {str(e)}")
+            )
+    
+    def _create_exploration_results_card(self, result: Dict[str, Any]) -> Attachment:
+        """Create a card showing exploration results"""
+        # Create facts for the card
+        facts = []
+        
+        # Add discovered tables
+        if result.get("discovered_schema"):
+            tables = list(result["discovered_schema"].keys())
+            facts.append({
+                "title": "Tables Explored",
+                "value": ", ".join(tables[:3]) + (f" +{len(tables)-3} more" if len(tables) > 3 else "")
+            })
+        
+        # Add pattern usage
+        if result.get("using_mcp_pattern"):
+            facts.append({
+                "title": "Method",
+                "value": "Pattern Reuse"
+            })
+        
+        # Add query history summary
+        query_purposes = []
+        for q in result.get("query_history", [])[:3]:
+            purpose = q.get("purpose", "Data exploration")
+            rows = q.get("row_count", 0)
+            query_purposes.append(f"• {purpose} ({rows} rows)")
+        
+        card = {
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.3",
+                "body": [
+                    {
+                        "type": "Container",
+                        "items": [
+                            {
+                                "type": "TextBlock",
+                                "text": "🔍 Autonomous Exploration Complete",
+                                "weight": "bolder",
+                                "size": "large",
+                                "wrap": True
+                            },
+                            {
+                                "type": "TextBlock",
+                                "text": f"Executed {result['queries_executed']} queries in {result['iterations_used']} iterations",
+                                "isSubtle": True,
+                                "wrap": True
+                            }
+                        ]
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": facts
+                    },
+                    {
+                        "type": "Container",
+                        "items": [
+                            {
+                                "type": "TextBlock",
+                                "text": "Query Progression:",
+                                "weight": "bolder",
+                                "size": "medium"
+                            },
+                            {
+                                "type": "TextBlock",
+                                "text": "\n".join(query_purposes),
+                                "wrap": True,
+                                "isSubtle": True
+                            }
+                        ]
+                    }
+                ],
+                "actions": [
+                    {
+                        "type": "Action.Submit",
+                        "title": "View Full Details",
+                        "data": {
+                            "action": "show_exploration_details"
+                        }
+                    }
+                ]
+            }
+        }
+        
+        return card
+    
+    def _create_explanation_card(self, explanation_summary: Dict[str, Any]) -> Attachment:
+        """Create detailed explanation card"""
+        decisions = []
+        
+        # Extract key decisions
+        for iteration in explanation_summary.get("detailed_reasoning", [])[:3]:
+            for decision in iteration.get("decisions", [])[:2]:
+                decisions.append({
+                    "iteration": iteration["iteration"],
+                    "type": decision["type"],
+                    "reasoning": decision["reasoning"]
+                })
+        
+        card = {
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.3",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "text": "🧠 Exploration Reasoning",
+                        "weight": "bolder",
+                        "size": "large"
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": f"Total iterations: {explanation_summary['total_iterations']} | Decisions made: {explanation_summary['decision_count']}",
+                        "isSubtle": True,
+                        "wrap": True
+                    },
+                    {
+                        "type": "Container",
+                        "items": [
+                            {
+                                "type": "TextBlock",
+                                "text": "**Key Decision Points:**",
+                                "weight": "bolder"
+                            }
+                        ] + [
+                            {
+                                "type": "Container",
+                                "items": [
+                                    {
+                                        "type": "TextBlock",
+                                        "text": f"**Iteration {d['iteration']} - {d['type']}**",
+                                        "weight": "bolder",
+                                        "size": "small"
+                                    },
+                                    {
+                                        "type": "TextBlock",
+                                        "text": d["reasoning"],
+                                        "wrap": True,
+                                        "isSubtle": True
+                                    }
+                                ],
+                                "separator": True
+                            } for d in decisions
+                        ]
+                    }
+                ] + ([{
+                    "type": "Container",
+                    "items": [
+                        {
+                            "type": "TextBlock",
+                            "text": "**Key Insights:**",
+                            "weight": "bolder"
+                        },
+                        {
+                            "type": "TextBlock",
+                            "text": "\n".join(f"• {insight}" for insight in explanation_summary.get("key_insights", [])),
+                            "wrap": True
+                        }
+                    ],
+                    "separator": True
+                }] if explanation_summary.get("key_insights") else [])
+            }
+        }
+        
+        return card
 
 # Export the main class
-__all__ = ['SQLAssistantBot', 'EnhancedMCPClient']
+__all__ = ['SQLAssistantBot']

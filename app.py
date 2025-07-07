@@ -1,12 +1,11 @@
-# app.py - Updated main application with built-in admin dashboard
+# app.py - Updated main application with URL-embedded authentication
 """
 Main application entry point for SQL Assistant Teams Bot
-Now includes built-in admin dashboard at /admin
+Updated to use URL-embedded authentication (code in URL)
 """
 
 import os
 import logging
-import json
 from datetime import datetime
 from aiohttp import web
 from aiohttp.web import Request, Response, json_response
@@ -104,21 +103,25 @@ def check_environment():
             logger.error(f"❌ {var}: NOT SET ({description})")
             missing_vars.append(var)
     
-    # Optional variables
+    # Optional variables - Note: AZURE_FUNCTION_KEY is no longer needed
     optional_vars = {
-        "AZURE_FUNCTION_KEY": "Function authentication key",
         "AZURE_OPENAI_DEPLOYMENT_NAME": "OpenAI deployment name (defaults to gpt-4)",
         "PORT": "Application port (defaults to 8000)"
     }
     
+    # Check if URL has embedded authentication
+    function_url = os.environ.get("AZURE_FUNCTION_URL", "")
+    if function_url and "code=" in function_url:
+        logger.info("✓ AZURE_FUNCTION_URL contains embedded authentication (code parameter)")
+        logger.info("ℹ️ AZURE_FUNCTION_KEY: Not needed (using URL-embedded auth)")
+    else:
+        logger.warning("⚠️ AZURE_FUNCTION_URL does not contain authentication code")
+        logger.warning("⚠️ Function calls may fail without proper authentication")
+    
     for var, description in optional_vars.items():
         value = os.environ.get(var)
         if value:
-            if "KEY" in var:
-                masked = value[:4] + "***" + value[-4:] if len(value) > 8 else "***"
-                logger.info(f"ℹ️ {var}: {masked} ({description})")
-            else:
-                logger.info(f"ℹ️ {var}: {value} ({description})")
+            logger.info(f"ℹ️ {var}: {value} ({description})")
         else:
             logger.warning(f"⚠️ {var}: Not set ({description})")
     
@@ -180,17 +183,18 @@ except Exception as e:
     logger.error(f"❌ Failed to initialize Azure OpenAI translator: {e}")
     logger.warning("Bot will run with limited functionality")
 
-# Create the bot
+# Create the bot - Note: function_key is now None for URL-embedded auth
 try:
     BOT = SQLAssistantBot(
         conversation_state=CONVERSATION_STATE,
         user_state=USER_STATE,
         sql_translator=SQL_TRANSLATOR,
         function_url=os.environ.get("AZURE_FUNCTION_URL", ""),
-        function_key=os.environ.get("AZURE_FUNCTION_KEY", ""),
+        function_key=None,  # No separate key needed for URL-embedded auth
         mcp_client=None  # Disabled for now
     )
     logger.info("✓ SQLAssistantBot initialized successfully")
+    logger.info("ℹ️ Using URL-embedded authentication for Azure Function")
 except Exception as e:
     logger.error(f"❌ Failed to initialize SQLAssistantBot: {e}")
     logger.warning("Using fallback bot")
@@ -247,6 +251,10 @@ async def messages(req: Request) -> Response:
 async def health(req: Request) -> Response:
     """Comprehensive health check endpoint"""
     try:
+        # Check if function URL has embedded auth
+        function_url = os.environ.get("AZURE_FUNCTION_URL", "")
+        has_embedded_auth = "code=" in function_url
+        
         health_status = {
             "status": "healthy",
             "version": "1.0.0",
@@ -258,27 +266,28 @@ async def health(req: Request) -> Response:
                 "bot": "running",
                 "adapter": "configured",
                 "openai": "configured" if SQL_TRANSLATOR else "error",
-                "sql_function": "configured" if os.environ.get("AZURE_FUNCTION_URL") else "not configured",
+                "sql_function": "configured" if function_url else "not configured",
+                "sql_function_auth": "url-embedded" if has_embedded_auth else "none",
                 "mcp": "disabled",
                 "admin_dashboard": "available" if ADMIN_DASHBOARD_AVAILABLE else "not available"
             },
             "environment_check": {
                 "missing_variables": missing_vars,
-                "has_critical_vars": len(missing_vars) == 0
+                "has_critical_vars": len(missing_vars) == 0,
+                "function_auth_method": "url-embedded" if has_embedded_auth else "requires-configuration"
             }
         }
         
         # Test Azure Function if configured
-        if os.environ.get("AZURE_FUNCTION_URL"):
+        if function_url:
             try:
                 import aiohttp
                 async with aiohttp.ClientSession() as session:
-                    headers = {}
-                    if os.environ.get("AZURE_FUNCTION_KEY"):
-                        headers["x-functions-key"] = os.environ.get("AZURE_FUNCTION_KEY")
+                    # No additional headers needed for URL-embedded auth
+                    headers = {"Content-Type": "application/json"}
                     
                     async with session.post(
-                        os.environ.get("AZURE_FUNCTION_URL"),
+                        function_url,
                         json={"query_type": "metadata"},
                         headers=headers,
                         timeout=aiohttp.ClientTimeout(total=5)
@@ -306,6 +315,7 @@ async def test(req: Request) -> Response:
         "message": "SQL Assistant Bot is running!",
         "timestamp": datetime.now().isoformat(),
         "environment": DEPLOYMENT_ENV,
+        "auth_method": "URL-embedded authentication",
         "admin_dashboard": f"Available at https://{req.host}/admin" if ADMIN_DASHBOARD_AVAILABLE else "Not available"
     })
 
@@ -317,6 +327,7 @@ async def admin_info(req: Request) -> Response:
             "available": True,
             "url": f"https://{req.host}/admin",
             "message": "Admin dashboard is available",
+            "auth_method": "URL-embedded authentication active",
             "features": [
                 "Real-time system monitoring",
                 "Component health testing", 
@@ -359,6 +370,13 @@ async def on_startup(app):
     logger.info("=== SQL Assistant Bot Startup ===")
     logger.info(f"Environment: {DEPLOYMENT_ENV}")
     logger.info(f"Bot App ID: {os.environ.get('MICROSOFT_APP_ID', 'Not set')[:8]}...")
+    
+    # Check authentication method
+    function_url = os.environ.get("AZURE_FUNCTION_URL", "")
+    if function_url and "code=" in function_url:
+        logger.info("✅ Using URL-embedded authentication for Azure Function")
+    else:
+        logger.warning("⚠️ Azure Function URL does not contain authentication")
     
     if missing_vars:
         logger.warning(f"⚠️ Missing environment variables: {', '.join(missing_vars)}")
@@ -411,6 +429,7 @@ if __name__ == "__main__":
     try:
         PORT = int(os.environ.get("PORT", 8000))
         logger.info(f"Starting bot on port {PORT}")
+        logger.info("Using URL-embedded authentication (no separate function key needed)")
         
         if ADMIN_DASHBOARD_AVAILABLE:
             logger.info(f"🎉 Admin dashboard will be available at: http://localhost:{PORT}/admin")
