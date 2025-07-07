@@ -77,6 +77,32 @@ except ImportError as e:
     logger.warning(f"⚠️ Admin dashboard not available: {e}")
     ADMIN_DASHBOARD_AVAILABLE = False
 
+# Add this import at the top of app.py after the other imports
+try:
+    from sql_console import add_console_routes
+    logger.info("✓ Successfully imported SQL console")
+    SQL_CONSOLE_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"⚠️ SQL console not available: {e}")
+    SQL_CONSOLE_AVAILABLE = False
+
+# Then after adding admin dashboard routes (around line 440), add:
+
+# Add SQL console routes if available
+if SQL_CONSOLE_AVAILABLE:
+    try:
+        console = add_console_routes(APP, SQL_TRANSLATOR, BOT)
+        logger.info("✓ SQL console routes added")
+        logger.info("🖥️ SQL console will be available at /console")
+    except Exception as e:
+        logger.error(f"❌ Failed to add SQL console routes: {e}")
+        SQL_CONSOLE_AVAILABLE = False
+
+# Update the startup logs section to include console endpoint:
+# In the on_startup function, add this to the endpoints list:
+if SQL_CONSOLE_AVAILABLE:
+    logger.info("  - /console (SQL console) 🖥️")
+
 # Check critical environment variables
 def check_environment():
     """Check and log environment variable status"""
