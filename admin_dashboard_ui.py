@@ -278,7 +278,6 @@ def get_admin_dashboard_css():
         to { transform: rotate(360deg); }
     }
     '''
-    '''
 
 def get_admin_dashboard_javascript():
     """Return the JavaScript code for the admin dashboard"""
@@ -388,8 +387,7 @@ def get_admin_dashboard_javascript():
             const result = await makeApiCall('/health');
             
             if (result.status === 'healthy') {
-                const details = `Version: ${result.version}
-Services: ${JSON.stringify(result.services, null, 2)}`;
+                const details = `Version: ${result.version}\\nServices: ${JSON.stringify(result.services, null, 2)}`;
                 updateStatus('health', 'success', details);
                 log('✅ Health check passed', 'success');
             } else {
@@ -410,9 +408,7 @@ Services: ${JSON.stringify(result.services, null, 2)}`;
             const result = await makeApiCall('/admin/api/openai');
             
             if (result.status === 'success' && result.data.success) {
-                const details = `Deployment: ${result.data.details.deployment}
-Model: ${result.data.details.model}
-Response Time: ${result.data.details.response_time_ms}ms`;
+                const details = `Deployment: ${result.data.details.deployment}\\nModel: ${result.data.details.model}\\nResponse Time: ${result.data.details.response_time_ms}ms`;
                 updateStatus('openai', 'success', details);
                 log('✅ Azure OpenAI connection successful', 'success');
             } else {
@@ -434,9 +430,7 @@ Response Time: ${result.data.details.response_time_ms}ms`;
             const result = await makeApiCall('/admin/api/function');
             
             if (result.status === 'success' && result.data.success) {
-                const details = `Auth Method: ${result.data.details.auth_method}
-Databases: ${result.data.details.databases_found}
-Response Time: ${result.data.details.response_time_ms}ms`;
+                const details = `Auth Method: ${result.data.details.auth_method}\\nDatabases: ${result.data.details.databases_found}\\nResponse Time: ${result.data.details.response_time_ms}ms`;
                 updateStatus('sqlFunction', 'success', details);
                 log(`✅ SQL Function connected - ${result.data.details.databases_found} databases found`, 'success');
             } else {
@@ -460,9 +454,7 @@ Response Time: ${result.data.details.response_time_ms}ms`;
             });
             
             if (result.status === 'success') {
-                const details = `Query: ${result.query}
-Database: ${result.database}
-Confidence: ${result.confidence}`;
+                const details = `Query: ${result.query}\\nDatabase: ${result.database}\\nConfidence: ${result.confidence}`;
                 updateStatus('translator', 'success', details);
                 log('✅ SQL Translator working correctly', 'success');
             } else {
@@ -486,9 +478,7 @@ Confidence: ${result.confidence}`;
             const clientLatency = Math.round(end - start);
             
             if (result.status === 'success') {
-                const details = `Client Latency: ${clientLatency}ms
-Server Time: ${result.response_time_ms}ms
-Memory: ${result.memory_usage_mb}MB`;
+                const details = `Client Latency: ${clientLatency}ms\\nServer Time: ${result.response_time_ms}ms\\nMemory: ${result.memory_usage_mb}MB`;
                 updateStatus('performance', 'success', details);
                 log(`✅ Performance test: ${clientLatency}ms latency`, 'success');
             } else {
@@ -582,7 +572,6 @@ Memory: ${result.memory_usage_mb}MB`;
         log('💡 Click "Run All Tests" to check system status', 'info');
         updateOverallStatus();
     });
-    '''
     '''
 
 def get_admin_dashboard_html(user_name="Admin"):

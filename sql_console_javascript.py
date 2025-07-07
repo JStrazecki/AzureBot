@@ -320,5 +320,5 @@ def get_sql_console_javascript():
             tableList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Connection error</div>';
         }
     }
-    '''
+   
     '''
