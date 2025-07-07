@@ -713,52 +713,52 @@ class EnhancedAdminDashboard:
                                 "status": "error",
                                 "data": {
                                     "success": False,
-                                    "error": f"Function error: {response.status}",
-                                   "details": {
-                                       "status_code": response.status,
-                                       "auth_method": auth_config["auth_method"],
-                                       "response": response_text[:200],
-                                       "auth_details": auth_details
-                                   }
-                               },
-                               "timestamp": datetime.now().isoformat()
-                           })
-                           
-           except aiohttp.ClientConnectorError as e:
-               return json_response({
-                   "status": "error",
-                   "data": {
-                       "success": False,
-                       "error": f"Connection error: Cannot reach function URL",
-                       "details": {
-                           "exception": str(e),
-                           "url": auth_config["url"],
-                           "auth_method": auth_config["auth_method"]
-                       }
-                   },
-                   "timestamp": datetime.now().isoformat()
-               })
-           except Exception as e:
-               return json_response({
-                   "status": "error",
-                   "data": {
-                       "success": False,
-                       "error": f"Connection error: {str(e)}",
-                       "details": {
-                           "exception_type": type(e).__name__,
-                           "auth_method": auth_config["auth_method"],
-                           "auth_details": auth_details
-                       }
-                   },
-                   "timestamp": datetime.now().isoformat()
-               })
-               
-       except Exception as e:
-           return json_response({
-               "status": "error",
-               "error": str(e),
-               "timestamp": datetime.now().isoformat()
-           }, status=500)
+                                   "error": f"Function error: {response.status}",
+                                    "details": {
+                                        "status_code": response.status,
+                                        "auth_method": auth_config["auth_method"],
+                                        "response": response_text[:200],
+                                        "auth_details": auth_details
+                                    }
+                                },
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            
+        except aiohttp.ClientConnectorError as e:
+            return json_response({
+                "status": "error",
+                "data": {
+                    "success": False,
+                    "error": f"Connection error: Cannot reach function URL",
+                    "details": {
+                        "exception": str(e),
+                        "url": auth_config["url"],
+                        "auth_method": auth_config["auth_method"]
+                    }
+                },
+                "timestamp": datetime.now().isoformat()
+            })
+        except Exception as e:
+            return json_response({
+                "status": "error",
+                "data": {
+                    "success": False,
+                    "error": f"Connection error: {str(e)}",
+                    "details": {
+                        "exception_type": type(e).__name__,
+                        "auth_method": auth_config["auth_method"],
+                        "auth_details": auth_details
+                    }
+                },
+                "timestamp": datetime.now().isoformat()
+            })
+                
+    except Exception as e:
+        return json_response({
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }, status=500)
    
    async def _get_msi_token(self, session: aiohttp.ClientSession) -> Optional[str]:
        """Get MSI token for Azure resources"""
