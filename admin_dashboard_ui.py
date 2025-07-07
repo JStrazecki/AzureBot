@@ -278,6 +278,7 @@ def get_admin_dashboard_css():
         to { transform: rotate(360deg); }
     }
     '''
+    '''
 
 def get_admin_dashboard_javascript():
     """Return the JavaScript code for the admin dashboard"""
@@ -581,6 +582,7 @@ Memory: ${result.memory_usage_mb}MB`;
         log('💡 Click "Run All Tests" to check system status', 'info');
         updateOverallStatus();
     });
+    '''
     '''
 
 def get_admin_dashboard_html(user_name="Admin"):
