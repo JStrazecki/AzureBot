@@ -1,0 +1,57 @@
+
+┌────────────────────┐
+│ User Question      │
+│ "Comare database structure"
+└─────────┬──────────┘
+          ▼
+┌────────────────────┐
+│ azure_openai_sql_  │      ┌─────────────────┐
+│ translator.py      │─────▶│ Azure OpenAI    │
+│ handle_complex_    │◀─────│ Breaks down into│
+│ query()            │      │ multiple steps  │
+└─────────┬──────────┘      └─────────────────┘
+          │
+          ▼ Returns List[SQLQuery] with requires_followup=True
+          │
+    ┌─────┴─────[ LOOP START ]──────────────┐
+    │                                       │
+    ▼                                       │
+┌────────────────────┐                      │
+│ Step 1: Get Sales  │                      │
+│ Azure Function     │                      │
+│ Executes SQL       │                      │
+└─────────┬──────────┘                      │
+          ▼                                 │
+┌────────────────────┐                      │
+│ result_formatter.py│                      │
+│ Analyzes results   │                      │
+└─────────┬──────────┘                      │
+          ▼                                 │
+┌────────────────────┐      ┌─────────────┐ │
+│ azure_openai_sql_  │─────▶│ Azure OpenAI│ │
+│ translator.py      │      │ Analyzes    │ │
+│ explain_results()  │◀─────│ results &   │ │
+│                    │      │ decides next│ │
+└─────────┬──────────┘      └─────────────┘ │
+          │                                 │
+          ├─ requires_followup? ────────────┘
+          │   YES: Generate next query
+          │   NO: Continue
+          ▼
+┌────────────────────┐
+│ Step 2: Get        │
+│ Inventory Levels   │
+│ (Same flow)        │
+└─────────┬──────────┘
+          ▼
+┌────────────────────┐      ┌─────────────┐
+│ Final Analysis     │─────▶│ Azure OpenAI│
+│ Combine all results│◀─────│ Synthesizes │
+│ for final answer   │      │ all data    │
+└─────────┬──────────┘      └─────────────┘
+          ▼
+┌────────────────────┐
+│ Console displays   │
+│ comprehensive      │
+│ analysis           │
+└────────────────────┘
