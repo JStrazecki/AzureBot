@@ -1,4 +1,4 @@
-# Create a new file: bot/query_validator.py
+# query_validator.py - Shared Query Validator
 # This shares the validation logic between the bot and Azure Function
 
 class QueryValidator:
@@ -6,15 +6,21 @@ class QueryValidator:
     
     # Safety constants
     MAX_ROWS_TO_RETURN = 10000
-    ALLOWED_QUERY_PREFIXES = ['select', 'with']
+    ALLOWED_QUERY_PREFIXES = ['select', 'with', 'sp_', 'execute', 'exec', 'show', 'describe']
     
     # Dangerous SQL keywords to block
     DANGEROUS_KEYWORDS = [
         'insert', 'update', 'delete', 'drop', 'create', 'alter', 'truncate',
-        'exec', 'execute', 'grant', 'revoke', 'backup', 'restore', 'merge',
-        'bulk', 'into', 'shutdown', 'reconfigure', 'sp_configure', 'xp_cmdshell',
+        'grant', 'revoke', 'backup', 'restore', 'merge',
+        'bulk', 'shutdown', 'reconfigure', 'xp_cmdshell',
         'openrowset', 'openquery', 'opendatasource'
     ]
+    
+    # Safe keywords that might appear in dangerous context but are OK
+    SAFE_EXCEPTIONS = {
+        'into': ['insert into', 'bulk insert'],  # OK if not in these contexts
+        'sp_configure': ['reconfigure']  # OK if not followed by reconfigure
+    }
     
     @staticmethod
     def is_query_safe(query: str) -> tuple[bool, str]:
@@ -27,42 +33,56 @@ class QueryValidator:
         
         query_lower = query.strip().lower()
         
+        # Allow system procedures
+        if query_lower.startswith(('sp_', 'exec sp_', 'execute sp_')):
+            # Check if it's a safe system procedure
+            safe_procedures = [
+                'sp_tables', 'sp_databases', 'sp_columns', 'sp_help', 
+                'sp_helptext', 'sp_who', 'sp_who2', 'sp_helpdb'
+            ]
+            if any(proc in query_lower for proc in safe_procedures):
+                return True, "Safe system procedure"
+        
         # Check if query starts with allowed prefix
         if not any(query_lower.startswith(prefix) for prefix in QueryValidator.ALLOWED_QUERY_PREFIXES):
             return False, f"Query must start with one of: {', '.join(QueryValidator.ALLOWED_QUERY_PREFIXES)}"
         
-        # Check for dangerous keywords
+        # Check for dangerous keywords with context awareness
         for keyword in QueryValidator.DANGEROUS_KEYWORDS:
             if keyword in query_lower:
+                # Check for safe exceptions
+                if keyword in QueryValidator.SAFE_EXCEPTIONS:
+                    dangerous_contexts = QueryValidator.SAFE_EXCEPTIONS[keyword]
+                    if not any(context in query_lower for context in dangerous_contexts):
+                        continue  # This usage is safe
+                
+                # Special handling for common safe patterns
+                if keyword == 'into' and 'insert' not in query_lower and 'bulk' not in query_lower:
+                    continue  # SELECT INTO temp table is OK
+                
                 return False, f"Query contains forbidden keyword: {keyword}"
         
         # Check for SQL injection patterns
         injection_patterns = [
-            '--',  # SQL comment
             '/*',  # Block comment start
             '*/',  # Block comment end
-            ';',   # Statement separator (except at end)
             'xp_', # Extended procedures
-            'sp_' # System procedures (except common ones)
         ]
         
         for pattern in injection_patterns:
             if pattern in query_lower:
-                # Allow some safe system procedures
-                if pattern == 'sp_' and any(safe in query_lower for safe in ['sp_help', 'sp_columns']):
-                    continue
-                # Allow single semicolon at end
-                if pattern == ';' and query.strip().endswith(';') and query.count(';') == 1:
-                    continue
                 return False, f"Query contains potentially dangerous pattern: {pattern}"
         
-        # Check for multiple statements
-        if query.count(';') > 1 or (query.count(';') == 1 and not query.strip().endswith(';')):
+        # Check for multiple statements (but allow single semicolon at end)
+        semicolon_count = query.count(';')
+        if semicolon_count > 1 or (semicolon_count == 1 and not query.strip().endswith(';')):
             return False, "Multiple statements are not allowed"
         
         # Additional safety checks
         if 'into' in query_lower and 'select' in query_lower:
-            return False, "SELECT INTO statements are not allowed"
+            # Allow SELECT INTO for temp tables only
+            if not any(temp in query_lower for temp in ['#', 'tempdb']):
+                return False, "SELECT INTO statements are only allowed for temp tables"
         
         return True, ""
     
@@ -70,6 +90,10 @@ class QueryValidator:
     def add_safety_limits(query: str) -> str:
         """Add safety limits to query if not present"""
         query_lower = query.lower()
+        
+        # Don't add limits to system procedures or certain queries
+        if any(query_lower.startswith(prefix) for prefix in ['sp_', 'exec', 'execute', 'show', 'describe']):
+            return query
         
         # Add TOP limit if not present
         if 'top' not in query_lower and 'count' not in query_lower:
@@ -139,7 +163,3 @@ class QueryValidator:
             sanitized = sanitized.replace(pattern, '')
         
         return sanitized
-
-
-# Also update the import in autonomous_sql_explorer.py:
-# from query_validator import QueryValidator

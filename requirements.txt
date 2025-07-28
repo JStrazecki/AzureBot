@@ -1,3 +1,5 @@
+# requirements.txt - Complete dependencies for SQL Assistant with Power BI Analyst
+
 # Core web framework
 aiohttp==3.10.5
 gunicorn==21.2.0
@@ -6,9 +8,9 @@ gunicorn==21.2.0
 openai>=1.12.0
 tiktoken==0.5.2
 
-# Azure authentication (optional, for future use)
+# Azure authentication and Power BI
 azure-identity==1.15.0
-msal==1.31.1
+msal==1.31.1  # Required for Power BI authentication
 
 # Security
 pyjwt==2.8.0
@@ -21,3 +23,24 @@ charset-normalizer==3.3.2
 
 # Optional for performance monitoring
 psutil==5.9.0
+
+# Data processing for result formatting
+pandas==2.0.3  # Optional but useful for data manipulation
+
+# Async utilities
+aiofiles==23.2.1  # For async file operations if needed
+
+# JSON handling
+ujson==5.8.0  # Faster JSON parsing (optional)
+
+# Date/time handling
+python-dateutil==2.8.2
+
+# Power BI specific (if using additional features)
+# azure-mgmt-powerbiembedded==2.0.0  # Optional for embedded scenarios
+
+# Bot framework dependencies (already installed)
+# These are included in your bot setup but adding for completeness
+# botbuilder-core
+# botbuilder-schema
+# botframework-connector

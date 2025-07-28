@@ -66,4 +66,4 @@ jobs:
         with:
           app-name: 'sqlbottest'
           slot-name: 'Production'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_618886D2D60B48BDB715A335EF60DAEF }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_9F32AA6E60224F2390156C5CB2702CB4 }}
